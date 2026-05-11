@@ -1,0 +1,17 @@
+# Vector store
+faiss-cpu>=1.7.0
+numpy>=1.20
+
+# OpenAI client for prototyping
+openai>=1.0
+
+# PDF extraction
+pymupdf>=1.23
+
+# Optional but useful for example.py
+python-dotenv>=1.0
+
+# When Llama integrations land, add:
+# torch>=2.0
+# transformers>=4.40
+# accelerate>=0.30

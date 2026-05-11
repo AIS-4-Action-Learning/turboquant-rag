@@ -216,3 +216,19 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+
+# --- rag library-specific ---
+
+# Data files (large PDFs and processed corpora)
+data/
+
+# FAISS indexes (regeneratable from corpus.json)
+*.faiss
+
+# macOS
+.DS_Store
+
+# Editor configs
+.vscode/
+.idea/
