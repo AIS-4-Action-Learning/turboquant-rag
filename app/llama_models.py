@@ -113,7 +113,7 @@ class LlamaBF16(Llama):
         with torch.device(device):
             self.model = Transformer(self.model_args).bfloat16()
 
-        self.model.load_state_dict(self.checkpoints, strict=False)
+        self.model.load_state_dict(self.checkpoints, strict=False, assign=True)
 
         self.model.eval()
 
@@ -162,7 +162,7 @@ class LlamaCompressed(Llama):
         if device == "cuda":
             self.model = self.model.bfloat16()
 
-        self.model.load_state_dict(self.checkpoints, strict=False)
+        self.model.load_state_dict(self.checkpoints, strict=False, assign=True)
 
         self.model.eval()
 
