@@ -69,7 +69,8 @@ def find_library(lib_path_str: str, variant: str) -> tuple[Path, str]:
         p = Path(lib_path_str)
         if p.exists():
             # Extract variant from path if possible
-            for v in ["simd", "simd-multi", "simt", "simt-multi"]:
+            # Check longer variant names first to avoid partial matches (e.g., simt matching simt-multi)
+            for v in ["simd-multi", "simt-multi", "simd", "simt"]:
                 if v in str(p):
                     return p, v
             return p, normalize_variant(variant)
