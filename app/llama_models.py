@@ -24,7 +24,7 @@ def _setup_single_process_distributed(device="cuda"):
     if not dist.is_initialized():
         dist.init_process_group(
             backend=backend,
-            init_method="file:///tmp/turboquant_dist_init",
+            init_method="tcp://127.0.0.1:23456",
             world_size=1,
             rank=0
         )
@@ -84,7 +84,7 @@ class Llama:
           tokens_tensor = torch.tensor(tokens, dtype=torch.long)
           # 2. Explicitly move to the T4 GPU device
           tokens_tensor = tokens_tensor.to(self.device).unsqueeze(0)
-          
+
           return tokens, tokens_tensor
       except Exception as e:
         print(f"CUDA Error in encoding: {e}")
@@ -110,9 +110,10 @@ class LlamaBF16(Llama):
         )
 
         # BF16 model standard
-        self.model = Transformer(self.model_args).to(device).bfloat16()
+        with torch.device(device):
+            self.model = Transformer(self.model_args).bfloat16()
 
-        self.model.load_state_dict(self.checkpoints, assign=True)
+        self.model.load_state_dict(self.checkpoints, strict=False)
 
         self.model.eval()
 
@@ -154,10 +155,14 @@ class LlamaCompressed(Llama):
             bit_width=bit_width,
             variant=self.variant,
         )
-        self.model = Transformer(self.model_args, self.kv_compressor).to(device)
+
+        with torch.device(device):
+            self.model = Transformer(self.model_args, self.kv_compressor)
+
         if device == "cuda":
             self.model = self.model.bfloat16()
-        self.model.load_state_dict(self.checkpoints, assign=True)
+
+        self.model.load_state_dict(self.checkpoints, strict=False)
 
         self.model.eval()
 
