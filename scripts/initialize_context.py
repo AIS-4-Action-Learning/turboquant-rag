@@ -11,6 +11,7 @@ This script calls the TurboQuant C API directly via ctypes:
 
 import ctypes
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -153,6 +154,46 @@ def save_context(lib, batch_ctx: ctypes.POINTER, output_path: Path) -> None:
     print(f"Context saved to: {output_path}")
 
 
+def format_env_context_path(context_path: Path, project_root: Path) -> str:
+    """Format context path for .env usage (prefer project-relative path)."""
+    context_abs = context_path.resolve()
+    try:
+        rel = context_abs.relative_to(project_root.resolve())
+        return f"./{rel.as_posix()}"
+    except ValueError:
+        return str(context_abs)
+
+
+def update_env_context_path(context_path: Path) -> None:
+    """Update CONTEXT_PATH in .env to point to the newly created context file."""
+    project_root = get_project_root()
+    env_path = project_root / ".env"
+    env_context_path = format_env_context_path(context_path, project_root)
+
+    lines = []
+    if env_path.exists():
+        lines = env_path.read_text().splitlines()
+
+    key = "CONTEXT_PATH"
+    key_pattern = re.compile(rf"^\s*{re.escape(key)}\s*=")
+    updated = False
+
+    for idx, line in enumerate(lines):
+        if key_pattern.match(line):
+            lines[idx] = f"{key}={env_context_path}"
+            updated = True
+            break
+
+    if not updated:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.append(f"{key}={env_context_path}")
+
+    env_path.write_text("\n".join(lines) + "\n")
+    os.environ[key] = env_context_path
+    print(f"Updated .env: {key}={env_context_path}")
+
+
 def destroy_context(lib, batch_ctx: ctypes.POINTER) -> None:
     """Destroy the batch context."""
     lib.turboquant_batch_destroy(ctypes.byref(batch_ctx))
@@ -203,6 +244,7 @@ def main():
         # Save context
         print(f"\nSaving context...")
         save_context(lib, batch_ctx, output_path)
+        update_env_context_path(output_path)
         
         # Cleanup
         print(f"\nCleaning up...")

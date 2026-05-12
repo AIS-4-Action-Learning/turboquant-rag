@@ -3,7 +3,8 @@ import json
 import os
 from app.turboquant import TurboQuantBatchCompressor
 from app import (CHECKPOINT_PATH, CONTEXT_PATH, DEFAULT_BIT_WIDTH,
-                 LIB_PATH, DEFAULT_DIMENSIONS)
+                 LIB_PATH, DEFAULT_DIMENSIONS, PARAMS_PATH, 
+                 TOKENIZER_PATH)
 from llama_models.llama3.args import ModelArgs
 from llama_models.llama3.model import Transformer
 from llama_models.llama3.tokenizer import Tokenizer
@@ -116,7 +117,7 @@ class LlamaCompressed(Llama):
                  dims : int = DEFAULT_DIMENSIONS):
         # Setup fairscale for single-process usage
         _setup_single_process_distributed()
-        
+
         super().__init__(device)
 
         self.bit_width = bit_width
