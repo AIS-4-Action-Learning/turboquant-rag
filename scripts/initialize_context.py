@@ -72,18 +72,19 @@ def load_env_vars():
     }
 
 
-def find_library(turboquant_root: Path, lib_path: str) -> Path:
+def find_library(lib_path: str) -> Path:
     """Find the TurboQuant shared library."""
     if lib_path:
         p = Path(lib_path)
         if p.exists():
             return p
     
-    # Search in TurboQuantQuantization build directory
+    # Search only in artifacts folder
+    artifacts_dir = get_project_root() / "artifacts"
     search_paths = [
-        turboquant_root / "build" / "libturboquant.so",
-        turboquant_root / "build" / "libturboquant.dylib",
-        turboquant_root / "build" / "turboquant.dll",
+        artifacts_dir / "libturboquant.so",
+        artifacts_dir / "libturboquant.dylib",
+        artifacts_dir / "turboquant.dll",
     ]
     
     for p in search_paths:
@@ -93,7 +94,7 @@ def find_library(turboquant_root: Path, lib_path: str) -> Path:
     raise FileNotFoundError(
         f"TurboQuant library not found. Searched in:\n"
         f"  - LIB_PATH env var: {lib_path}\n"
-        f"  - {turboquant_root / 'build'}"
+        f"  - {artifacts_dir}"
     )
 
 
@@ -221,11 +222,11 @@ def main():
     
     # Find library
     try:
-        lib_path = find_library(turboquant_root, lib_path_str)
+        lib_path = find_library(lib_path_str)
         print(f"  Library: {lib_path}")
     except FileNotFoundError as e:
         print(f"\nError: {e}")
-        print("\nPlease build TurboQuantQuantization first or set LIB_PATH in .env")
+        print("\nPlease place libturboquant.so in artifacts/ or set LIB_PATH in .env")
         sys.exit(1)
     
     # Setup output path

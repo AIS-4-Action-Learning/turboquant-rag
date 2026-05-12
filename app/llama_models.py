@@ -24,31 +24,6 @@ def _setup_single_process_distributed():
         fs_init.initialize_model_parallel(1)
 
 
-class LlamaGenerator:
-    def generate(self, tensor_tokens : torch.Tensor,
-                 llama : LlamaBF16 | LlamaCompressed,
-                 max_gen_len : int = 1024):
-        try:
-            generated_token = []
-            with torch.no_grad():
-                current_pos = 0
-                for _ in range(max_gen_len):
-                    logits = llama.model.forward(tensor_tokens, current_pos)
-                    next_token = torch.argmax(logits[:, -1], dim=-1)
-
-                    if next_token.item() == llama.tokenizer.eos_id:
-                        break
-
-                    generated_token.append(next_token.item())
-
-                    tensor_tokens = next_token.unsqueeze(0)
-                    current_pos += logits.shape[1]
-
-            return generated_token
-        except Exception as e:
-            print(e)
-
-
 class Llama:
     def __init__(self, device : str = "cpu"):
         try:
@@ -142,3 +117,28 @@ class LlamaCompressed(Llama):
         self.model.load_state_dict(self.checkpoints)
 
         self.model.eval()
+
+
+class LlamaGenerator:
+    def generate(self, tensor_tokens : torch.Tensor,
+                 llama : LlamaBF16 | LlamaCompressed,
+                 max_gen_len : int = 1024):
+        try:
+            generated_token = []
+            with torch.no_grad():
+                current_pos = 0
+                for _ in range(max_gen_len):
+                    logits = llama.model.forward(tensor_tokens, current_pos)
+                    next_token = torch.argmax(logits[:, -1], dim=-1)
+
+                    if next_token.item() == llama.tokenizer.eos_id:
+                        break
+
+                    generated_token.append(next_token.item())
+
+                    tensor_tokens = next_token.unsqueeze(0)
+                    current_pos += logits.shape[1]
+
+            return generated_token
+        except Exception as e:
+            print(e)
