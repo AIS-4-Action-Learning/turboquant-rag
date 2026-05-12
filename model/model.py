@@ -357,8 +357,6 @@ class Attention(nn.Module):
         xq, xk = apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
 
         if self.use_compressed_kv_cache:
-            if xq.device.type != "cuda":
-                raise RuntimeError("Compressed KV cache mode requires CUDA tensors")
 
             self._store_compressed_cache(
                 xk,
