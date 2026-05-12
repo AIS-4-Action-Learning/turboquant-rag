@@ -1,10 +1,13 @@
 import torch
 import json
 import os
-from app.turboquant import TurboQuantBatchCompressor
-from app import (CHECKPOINT_PATH, CONTEXT_PATH, DEFAULT_BIT_WIDTH,
-                 LIB_PATH, DEFAULT_DIMENSIONS, PARAMS_PATH, 
-                 TOKENIZER_PATH)
+from pathlib import Path
+from app import (
+    CHECKPOINT_PATH, CONTEXT_PATH, DEFAULT_BIT_WIDTH,
+    LIB_PATH, DEFAULT_DIMENSIONS, PARAMS_PATH, 
+    TOKENIZER_PATH, get_turboquant_lib_path, TURBOQUANT_VARIANT,
+    get_compressor_for_variant
+)
 from llama_models.llama3.args import ModelArgs
 from llama_models.llama3.model import Transformer
 from llama_models.llama3.tokenizer import Tokenizer
@@ -25,8 +28,27 @@ def _setup_single_process_distributed():
 
 
 class Llama:
-    def __init__(self, device : str = "cpu"):
+    def __init__(self, device : str = "cuda", is_batch : bool = True):
         try:
+            # Determine which variant to use
+            # Priority: explicit LIB_PATH > TURBOQUANT_VARIANT > auto (device + is_batch)
+            self.lib_path = get_turboquant_lib_path(device=device, is_batch=is_batch)
+
+            # Determine variant name from the library path for factory function
+            # The variant is the parent directory name of libturboquant.so
+            lib_dir = Path(self.lib_path).parent.name
+
+            # If LIB_PATH is set, use the directory name as variant
+            # Otherwise use TURBOQUANT_VARIANT or auto-derived
+            if LIB_PATH:
+                self.variant = lib_dir
+            else:
+                self.variant = TURBOQUANT_VARIANT.lower() if TURBOQUANT_VARIANT else (
+                    "simt-multi" if device == "cuda" and is_batch else
+                    "simt" if device == "cuda" else
+                    "simd-multi" if is_batch else "simd"
+                )
+
             # Read the hyperparameters from params.json
             with open(PARAMS_PATH, "r") as f:
                 self.params = json.load(f)
@@ -37,13 +59,13 @@ class Llama:
             # Set the device attribute to the input device argument
             self.device = device
 
-            # Load the weights to device memory (CPU RAM by default)
-            # Consider mmap on disk 
             self.checkpoints = torch.load(
                 str(CHECKPOINT_PATH),
-                map_location=device,
-                weights_only=True
+                mmap=True,
+                weights_only=True,
+                map_location="cpu" # map to CPU address space first
             )
+
 
         except Exception as e:
             print(e)
@@ -51,7 +73,8 @@ class Llama:
     def input_encoding(self, input_seq : str):
         try:
             tokens = self.tokenizer.encode(input_seq, bos=True, eos=False)
-            tokens_tensor = torch.tensor(tokens, dtype=torch.long, device=self.device)
+            # Add batch dimension: [seq_len] -> [1, seq_len]
+            tokens_tensor = torch.tensor(tokens, dtype=torch.long, device=self.device).unsqueeze(0)
 
             return tokens, tokens_tensor
         except Exception as e:
@@ -59,12 +82,13 @@ class Llama:
 
 
 class LlamaBF16(Llama):
-    def __init__(self, max_seq_length : int, batch_size : int, device : str = "cpu"):
+    def __init__(self, max_seq_length : int, batch_size : int, device : str = "cuda", 
+                 is_batch : bool = True):
         try:
             # Setup fairscale for single-process usage
             _setup_single_process_distributed()
-            
-            super().__init__(device)
+
+            super().__init__(device, is_batch)
 
             # Initialize model arguments (hyperparams, context window, and batch size)
             self.model_args = ModelArgs(
@@ -77,7 +101,7 @@ class LlamaBF16(Llama):
             # BF16 model standard
             self.model = Transformer(self.model_args).to(device).bfloat16()
 
-            self.model.load_state_dict(self.checkpoints)
+            self.model.load_state_dict(self.checkpoints, assign=True)
 
             self.model.eval()
         except Exception as e:
@@ -87,13 +111,14 @@ class LlamaBF16(Llama):
 class LlamaCompressed(Llama):
     def __init__(self, max_seq_length : int,
                  batch_size : int,
-                 device : str = "cpu",
+                 device : str = "cuda",
+                 is_batch : bool = True,
                  bit_width : int = DEFAULT_BIT_WIDTH,
                  dims : int = DEFAULT_DIMENSIONS):
         # Setup fairscale for single-process usage
         _setup_single_process_distributed()
 
-        super().__init__(device)
+        super().__init__(device, is_batch)
 
         self.bit_width = bit_width
         self.dims = dims
@@ -112,9 +137,16 @@ class LlamaCompressed(Llama):
             from app import PROJECT_ROOT
             context_path = str(PROJECT_ROOT / "artifacts" / f"turboquant_ctx_{dims}d_{bit_width}b.bin")
 
-        self.kv_compressor = TurboQuantBatchCompressor(LIB_PATH, context_path, dims, bit_width)
+        # Use factory function to get appropriate compressor for the variant
+        self.kv_compressor = get_compressor_for_variant(
+            lib_path=self.lib_path,
+            context_path=context_path,
+            block_size=dims,
+            bit_width=bit_width,
+            variant=self.variant,
+        )
         self.model = Transformer(self.model_args, self.kv_compressor)
-        self.model.load_state_dict(self.checkpoints)
+        self.model.load_state_dict(self.checkpoints, assign=True)
 
         self.model.eval()
 
