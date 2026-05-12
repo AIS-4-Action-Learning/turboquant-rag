@@ -49,21 +49,21 @@ class TurboQuantBatchContextSIMD(ctypes.Structure):
 
 class TurboQuantCompressorBase(ABC):
     """Abstract base for all TurboQuant compressors."""
-    
+
     def __init__(self, lib_path: str, context_path: str, block_size: int, bit_width: int):
         self.lib_path = lib_path
         self.context_path = context_path
         self.block_size = block_size
         self.bit_width = bit_width
         self._lib = None
-        
+
         if not os.path.exists(lib_path):
             raise FileNotFoundError(f"TurboQuant library not found: {lib_path}")
-        
+
         self._lib = ctypes.CDLL(lib_path)
         self._init_library()
         self._init_context()
-    
+
     @abstractmethod
     def _init_library(self):
         pass

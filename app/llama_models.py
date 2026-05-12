@@ -2,6 +2,7 @@ import torch
 import json
 import os
 from pathlib import Path
+import traceback as tr
 from app import (
     CHECKPOINT_PATH, CONTEXT_PATH, DEFAULT_BIT_WIDTH,
     LIB_PATH, DEFAULT_DIMENSIONS, PARAMS_PATH, 
@@ -69,6 +70,7 @@ class Llama:
 
         except Exception as e:
             print(e)
+            tr.print_exc()
 
     def input_encoding(self, input_seq : str):
         try:
@@ -79,6 +81,7 @@ class Llama:
             return tokens, tokens_tensor
         except Exception as e:
             print(e)
+            tr.print_exc()
 
 
 class LlamaBF16(Llama):
@@ -106,6 +109,7 @@ class LlamaBF16(Llama):
             self.model.eval()
         except Exception as e:
             print(e)
+            tr.print_exc()
 
 
 class LlamaCompressed(Llama):
@@ -115,40 +119,45 @@ class LlamaCompressed(Llama):
                  is_batch : bool = True,
                  bit_width : int = DEFAULT_BIT_WIDTH,
                  dims : int = DEFAULT_DIMENSIONS):
-        # Setup fairscale for single-process usage
-        _setup_single_process_distributed()
+        try:
+            # Setup fairscale for single-process usage
+            _setup_single_process_distributed()
 
-        super().__init__(device, is_batch)
+            super().__init__(device, is_batch)
 
-        self.bit_width = bit_width
-        self.dims = dims
+            self.bit_width = bit_width
+            self.dims = dims
 
-        # Initialize model arguments (hyperparams, context window, and batch size)
-        self.model_args = ModelArgs(
-            **self.params,
-            max_seq_len=max_seq_length,
-            max_batch_size=batch_size,
-            use_compressed_kv_cache=True
-        )
+            # Initialize model arguments (hyperparams, context window, and batch size)
+            self.model_args = ModelArgs(
+                **self.params,
+                max_seq_len=max_seq_length,
+                max_batch_size=batch_size,
+                use_compressed_kv_cache=True
+            )
 
-        # Use default context path if not set, looking in artifacts folder
-        context_path = CONTEXT_PATH
-        if not context_path:
-            from app import PROJECT_ROOT
-            context_path = str(PROJECT_ROOT / "artifacts" / f"turboquant_ctx_{dims}d_{bit_width}b.bin")
+            # Use default context path if not set, looking in artifacts folder
+            context_path = CONTEXT_PATH
+            if not context_path:
+                from app import PROJECT_ROOT
+                context_path = str(PROJECT_ROOT / "artifacts" / f"turboquant_ctx_{dims}d_{bit_width}b.bin")
 
-        # Use factory function to get appropriate compressor for the variant
-        self.kv_compressor = get_compressor_for_variant(
-            lib_path=self.lib_path,
-            context_path=context_path,
-            block_size=dims,
-            bit_width=bit_width,
-            variant=self.variant,
-        )
-        self.model = Transformer(self.model_args, self.kv_compressor)
-        self.model.load_state_dict(self.checkpoints, assign=True)
+            # Use factory function to get appropriate compressor for the variant
+            self.kv_compressor = get_compressor_for_variant(
+                lib_path=str(self.lib_path),
+                context_path=context_path,
+                block_size=dims,
+                bit_width=bit_width,
+                variant=self.variant,
+            )
+            self.model = Transformer(self.model_args, self.kv_compressor)
+            self.model.load_state_dict(self.checkpoints, assign=True)
 
-        self.model.eval()
+            self.model.eval()
+
+        except Exception as e:
+            print(e)
+            tr.print_exc()
 
 
 class LlamaGenerator:
@@ -174,3 +183,4 @@ class LlamaGenerator:
             return generated_token
         except Exception as e:
             print(e)
+            tr.print_exc()
