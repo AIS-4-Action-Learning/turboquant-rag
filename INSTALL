@@ -1,102 +1,96 @@
 #!/usr/bin/env bash
 
-set -e
+# Removed 'set -e' so the script continues if a build variant fails due to missing dependencies.
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ARTIFACTS_DIR="$PROJECT_ROOT/artifacts"
 MODEL_DIR="$PROJECT_ROOT/model"
 
 echo "Creating artifacts directory..."
-mkdir -p "$ARTIFACTS_DIR"
+mkdir -p "$ARTIFACTS_DIR" 
 
 echo "Installing high performance TurboQuant library..."
 
 # Clone to a temp location within project
 TURBOQUANT_DIR="$PROJECT_ROOT/.tmp_turboquant"
-SIMD_SL="$TURBOQUANT_DIR/simd/build/libturboquant.so"
-SIMD_MULTI_SL="$TURBOQUANT_DIR/simd-multi/build/libturboquant.so"
-SIMT_SL="$TURBOQUANT_DIR/simt/build/libturboquant.so"
-SIMT_MULTI_SL="$TURBOQUANT_DIR/simt-multi/build/libturboquant.so"
-
 rm -rf "$TURBOQUANT_DIR"
+git clone https://github.com/HamzaElhmd/Turboquant.git "$TURBOQUANT_DIR" 
 
-git clone https://github.com/HamzaElhmd/Turboquant.git "$TURBOQUANT_DIR"
+# Enhanced build function with error handling
+build_variant() {
+    local variant=$1
+    echo "------------------------------------------------"
+    echo "Attempting to build variant: $variant"
+    
+    if [ ! -d "$TURBOQUANT_DIR/$variant" ]; then
+        echo "⚠️  Directory $variant not found. Skipping."
+        return 1
+    fi
 
-build_repo() {
-    rm -rf build
-    mkdir build
-    cd build
-    cmake ..
-    make -j
-    cd ../..
+    cd "$TURBOQUANT_DIR/$variant"
+    rm -rf build && mkdir build && cd build
+    
+    # Try to configure and build. If CUDA/ICX is missing, cmake or make will return non-zero.
+    if cmake .. && make -j; then
+        echo "✅ Successfully built $variant"
+        
+        # Copy to artifacts only if build succeeded
+        mkdir -p "$ARTIFACTS_DIR/$variant"
+        if [ -f "libturboquant.so" ]; then
+            cp "libturboquant.so" "$ARTIFACTS_DIR/$variant/"
+            echo "✅ Artifact copied to $ARTIFACTS_DIR/$variant/"
+        fi
+        cd "$PROJECT_ROOT"
+        return 0
+    else
+        echo "❌ Build failed for $variant (likely missing CUDA or Intel ICX). Skipping..."
+        cd "$PROJECT_ROOT"
+        return 1
+    fi
 }
 
-echo "Building TurboQuant..."
-cd "$TURBOQUANT_DIR"
+# Iterate through all implementations 
+build_variant "simd"
+build_variant "simd-multi"
+build_variant "simt"
+build_variant "simt-multi"
 
-# Build SIMD Implementation
-cd simd
-build_repo
-
-# Build SIMD-MULTI Implementation
-cd simd-multi
-build_repo
-
-# Build SIMT Implementation
-cd simt
-build_repo
-
-# Build SIMT-MULTI Implementation
-cd simt-multi
-build_repo
-
-echo "Copying library to artifacts..."
-mkdir -p "$ARTIFACTS_DIR/simd"
-cp "$SIMD_SL" "$ARTIFACTS_DIR/simd/"
-
-mkdir -p "$ARTIFACTS_DIR/simd-multi"
-cp "$SIMD_MULTI_SL" "$ARTIFACTS_DIR/simd-multi/"
-
-mkdir -p "$ARTIFACTS_DIR/simt"
-cp "$SIMT_SL" "$ARTIFACTS_DIR/simt/"
-
-mkdir -p "$ARTIFACTS_DIR/simt-multi"
-cp "$SIMT_MULTI_SL" "$ARTIFACTS_DIR/simt-multi/"
-
-cd "$PROJECT_ROOT"
+# Cleanup temp build directory [cite: 2]
 rm -rf "$TURBOQUANT_DIR"
 
 echo "Updating .env file with variant..."
 if grep -q "^TURBOQUANT_VARIANT=" .env 2>/dev/null; then
-    echo "TURBOQUANT_VARIANT already set in .env"
+    echo "TURBOQUANT_VARIANT already set in .env" [cite: 3]
 else
-    echo "TURBOQUANT_VARIANT=auto" >> .env
+    echo "TURBOQUANT_VARIANT=auto" >> .env [cite: 3]
 fi
 
 echo "Installing Llama Models open source library..."
 
 if [ -d "$MODEL_DIR/llama-models" ]; then
-    echo "llama-models already exists, skipping..."
+    echo "llama-models already exists, skipping..." 
 else
     mkdir -p "$MODEL_DIR"
-    git clone https://github.com/meta-llama/llama-models.git "$MODEL_DIR/llama-models"
+    git clone https://github.com/meta-llama/llama-models.git "$MODEL_DIR/llama-models" 
 fi
 
-# ===== COPY MODIFIED MODEL.PY AND ARGS.PY TO LLAMA_MODELS
-rm -rf "$MODEL_DIR/llama-models/llama_models/llama3/args.py"
-cp "$MODEL_DIR/args.py" "$MODEL_DIR/llama-models/llama_models/llama3/"
+# ===== COPY MODIFIED MODEL.PY AND ARGS.PY TO LLAMA_MODELS 
+# We only perform copies if the source files exist
+if [ -f "$MODEL_DIR/args.py" ]; then
+    rm -f "$MODEL_DIR/llama-models/llama_models/llama3/args.py"
+    cp "$MODEL_DIR/args.py" "$MODEL_DIR/llama-models/llama_models/llama3/"
+fi
 
-rm -rf "$MODEL_DIR/llama-models/llama_models/llama3/model.py"
-cp "$MODEL_DIR/model.py" "$MODEL_DIR/llama-models/llama_models/llama3/model.py"
+if [ -f "$MODEL_DIR/model.py" ]; then
+    rm -f "$MODEL_DIR/llama-models/llama_models/llama3/model.py"
+    cp "$MODEL_DIR/model.py" "$MODEL_DIR/llama-models/llama_models/llama3/model.py"
+fi
 
 echo ""
-echo "Installation complete!"
-echo "  - TurboQuant library (default): $ARTIFACTS_DIR/simt-multi/libturboquant.so"
-echo "  - Other variants:"
-echo "      * $ARTIFACTS_DIR/simd/libturboquant.so"
-echo "      * $ARTIFACTS_DIR/simd-multi/libturboquant.so"
-echo "      * $ARTIFACTS_DIR/simt/libturboquant.so"
-echo "  - Llama Models: $MODEL_DIR/llama-models"
+echo "Installation complete!" [cite: 5]
+echo "Summary of artifacts found in $ARTIFACTS_DIR:"
+ls -R "$ARTIFACTS_DIR"
+
 echo ""
 echo "Next steps:"
-echo "  1. Run: python -m scripts.initialize_context"
+echo "  1. Run: python -m scripts.initialize_context" [cite: 5]
