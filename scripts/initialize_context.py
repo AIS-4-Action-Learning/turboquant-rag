@@ -28,7 +28,7 @@ def load_env_vars():
     load_dotenv(env_path, override=True)
     
     return {
-        "bit_width": int(os.getenv("DEFAULT_BIT_WIDTH", "3")),
+        "bit_width": int(os.getenv("DEFAULT_BIT_WIDTH", "3")) - 1,
         "dims": int(os.getenv("DEFAULT_DIMENSIONS", "128")),
         "n_streams": int(os.getenv("DEFAULT_BLOCK_SIZE", "8")),
         "variant": os.getenv("TURBOQUANT_VARIANT", "auto"),
@@ -533,7 +533,7 @@ def main():
     artifacts_dir = project_root / "artifacts"
     artifacts_dir.mkdir(exist_ok=True)
     
-    output_path = artifacts_dir / f"turboquant_ctx_{variant}_{dims}d_{bit_width}b.bin"
+    output_path = artifacts_dir / f"turboquant_ctx_{variant}_{dims}d_{bit_width + 1}b.bin"
     
     try:
         # Initialize context

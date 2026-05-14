@@ -86,7 +86,7 @@ def get_turboquant_lib_path(device: str = "cuda", is_batch: bool = True) -> Path
     return lib_path
 
 # TurboQuant parameters
-DEFAULT_BIT_WIDTH = int(os.getenv("DEFAULT_BIT_WIDTH", _TURBOQUANT_BIT_WIDTH))
+DEFAULT_BIT_WIDTH = int(os.getenv("DEFAULT_BIT_WIDTH", _TURBOQUANT_BIT_WIDTH)) - 1
 DEFAULT_BLOCK_SIZE = int(os.getenv("DEFAULT_BLOCK_SIZE", _TURBOQUANT_BLOCK_SIZE))
 DEFAULT_DIMENSIONS = int(os.getenv("DEFAULT_DIMENSIONS", _TURBOQUANT_DIMENSIONS))
 
