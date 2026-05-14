@@ -237,14 +237,8 @@ class Attention(nn.Module):
             )
 
     def _flatten_for_compression(self, tensor: torch.Tensor) -> List[torch.Tensor]:
-        flat_vectors = tensor.contiguous().view(-1, self.head_dim)
-        blocks: List[torch.Tensor] = []
-        for vec in flat_vectors:
-            for block_idx in range(self.kv_cache_n_blocks):
-                start = block_idx * self.kv_cache_block_size
-                end = min(start + self.kv_cache_block_size, self.head_dim)
-                blocks.append(vec[start:end])
-        return blocks
+        flat_blocks = tensor.view(-1, self.kv_cache_block_size)
+        return list(torch.unbind(flat_blocks, dim=0))
 
     def _store_compressed_cache(
         self,
@@ -257,41 +251,37 @@ class Attention(nn.Module):
         cache_original_l2: torch.Tensor,
         cache_residual_l2: torch.Tensor,
     ) -> None:
+        """Vectorized storage: Uses bulk conversion to avoid Python loops."""
         blocks = self._flatten_for_compression(tensor)
-        compressed_blocks = self.kv_cache_compressor.compress_chunk(blocks)
+        compressed_results = self.kv_cache_compressor.compress_chunk(blocks)
 
-        expected = bsz * seqlen * self.n_local_kv_heads * self.kv_cache_n_blocks
-        if len(compressed_blocks) != expected:
-            raise RuntimeError(
-                f"Unexpected compressed block count: got {len(compressed_blocks)}, expected {expected}"
-            )
+        # Bulk convert bytes into flat buffers using list comprehensions (faster than loops)
+        all_bstrings = b"".join([res[2] for res in compressed_results])
+        all_qjls = b"".join([res[3] for res in compressed_results])
 
-        idx = 0
-        for b in range(bsz):
-            for s in range(seqlen):
-                cache_pos = start_pos + s
-                for h in range(self.n_local_kv_heads):
-                    for block_idx in range(self.kv_cache_n_blocks):
-                        original_l2, residual_l2, bstring_bytes, qjl_bytes = compressed_blocks[idx]
-                        idx += 1
+        # Convert to tensors and reshape to match the cache structure
+        # Shape: (bsz, seqlen, heads, n_blocks, ...)
+        b_tensor = torch.frombuffer(all_bstrings, dtype=torch.uint8).view(
+            bsz, seqlen, self.n_local_kv_heads, self.kv_cache_n_blocks, -1
+        )
+        q_tensor = torch.frombuffer(all_qjls, dtype=torch.uint8).view(
+            bsz, seqlen, self.n_local_kv_heads, self.kv_cache_n_blocks, -1
+        )
 
-                        if len(bstring_bytes) != self.kv_cache_bstring_bytes:
-                            raise RuntimeError(
-                                f"Invalid bstring size from compressor: got {len(bstring_bytes)}, expected {self.kv_cache_bstring_bytes}"
-                            )
-                        if len(qjl_bytes) != self.kv_cache_qjl_bytes:
-                            raise RuntimeError(
-                                f"Invalid qjl size from compressor: got {len(qjl_bytes)}, expected {self.kv_cache_qjl_bytes}"
-                            )
+        # Original and Residual L2s
+        orig_l2 = torch.tensor([res[0] for res in compressed_results], dtype=torch.float32).view(
+            bsz, seqlen, self.n_local_kv_heads, self.kv_cache_n_blocks
+        )
+        res_l2 = torch.tensor([res[1] for res in compressed_results], dtype=torch.float32).view(
+            bsz, seqlen, self.n_local_kv_heads, self.kv_cache_n_blocks
+        )
 
-                        cache_bstring[b, cache_pos, h, block_idx] = torch.tensor(
-                            bytearray(bstring_bytes), dtype=torch.uint8
-                        )
-                        cache_qjl[b, cache_pos, h, block_idx] = torch.tensor(
-                            bytearray(qjl_bytes), dtype=torch.uint8
-                        )
-                        cache_original_l2[b, cache_pos, h, block_idx] = float(original_l2)
-                        cache_residual_l2[b, cache_pos, h, block_idx] = float(residual_l2)
+        # Batch assignment to the cache slices
+        end_pos = start_pos + seqlen
+        cache_bstring[:bsz, start_pos:end_pos] = b_tensor.to(cache_bstring.device)
+        cache_qjl[:bsz, start_pos:end_pos] = q_tensor.to(cache_qjl.device)
+        cache_original_l2[:bsz, start_pos:end_pos] = orig_l2.to(cache_original_l2.device)
+        cache_residual_l2[:bsz, start_pos:end_pos] = res_l2.to(cache_residual_l2.device)
 
     def _fetch_decompressed_cache(
         self,
@@ -304,40 +294,27 @@ class Attention(nn.Module):
         target_device: torch.device,
         target_dtype: torch.dtype,
     ) -> torch.Tensor:
-        compressed_blocks = []
-        for b in range(bsz):
-            for s in range(cache_len):
-                for h in range(self.n_local_kv_heads):
-                    for block_idx in range(self.kv_cache_n_blocks):
-                        compressed_blocks.append(
-                            (
-                                float(cache_original_l2[b, s, h, block_idx].item()),
-                                float(cache_residual_l2[b, s, h, block_idx].item()),
-                                cache_bstring[b, s, h, block_idx].numpy().tobytes(),
-                                cache_qjl[b, s, h, block_idx].numpy().tobytes(),
-                            )
-                        )
+        """Vectorized fetching: Converts cache slices to C-input in bulk."""
+        # 1. Slice and flatten everything to CPU
+        o_flat = cache_original_l2[:bsz, :cache_len].reshape(-1).cpu().tolist()
+        r_flat = cache_residual_l2[:bsz, :cache_len].reshape(-1).cpu().tolist()
 
+        # Reshape bitstrings to (N, BytesPerBlock) before calling .numpy()
+        b_flat = cache_bstring[:bsz, :cache_len].contiguous().reshape(-1, self.kv_cache_bstring_bytes).cpu().numpy()
+        q_flat = cache_qjl[:bsz, :cache_len].contiguous().reshape(-1, self.kv_cache_qjl_bytes).cpu().numpy()
+
+        # 2. Reconstruct the list of tuples for the decompressor
+        compressed_blocks = [
+            (o_flat[i], r_flat[i], b_flat[i].tobytes(), q_flat[i].tobytes())
+            for i in range(len(o_flat))
+        ]
+
+        # 3. Batch Decompress (The C-API Multi-threaded call)
         decompressed_blocks = self.kv_cache_compressor.decompress_chunk(compressed_blocks)
-        if len(decompressed_blocks) != len(compressed_blocks):
-            raise RuntimeError(
-                f"Unexpected decompressed block count: got {len(decompressed_blocks)}, expected {len(compressed_blocks)}"
-            )
 
-        vectors: List[torch.Tensor] = []
-        block_ptr = 0
-        n_vectors = bsz * cache_len * self.n_local_kv_heads
-        for _ in range(n_vectors):
-            vec_parts: List[torch.Tensor] = []
-            for block_idx in range(self.kv_cache_n_blocks):
-                block_tensor = decompressed_blocks[block_ptr]
-                block_ptr += 1
-                start = block_idx * self.kv_cache_block_size
-                end = min(start + self.kv_cache_block_size, self.head_dim)
-                vec_parts.append(block_tensor[: end - start])
-            vectors.append(torch.cat(vec_parts, dim=0))
+        # 4. Stack and view back to (B, S, H, D)
+        stacked = torch.stack(decompressed_blocks, dim=0).to(device=target_device, dtype=target_dtype)
 
-        stacked = torch.stack(vectors, dim=0).to(device=target_device, dtype=target_dtype)
         return stacked.view(bsz, cache_len, self.n_local_kv_heads, self.head_dim)
 
     def forward(

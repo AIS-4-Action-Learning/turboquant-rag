@@ -20,7 +20,7 @@ def _setup_single_process_distributed(device="cuda"):
     import fairscale.nn.model_parallel.initialize as fs_init
 
     backend = "nccl" if device == "cuda" else "gloo"
-    
+
     if not dist.is_initialized():
         dist.init_process_group(
             backend=backend,
@@ -145,7 +145,7 @@ class LlamaCompressed(Llama):
         context_path = CONTEXT_PATH
         if not context_path:
             from app import PROJECT_ROOT
-            context_path = str(PROJECT_ROOT / "artifacts" / f"turboquant_ctx_{dims}d_{bit_width}b.bin")
+            context_path = str(PROJECT_ROOT / "artifacts" / f"turboquant_ctx_{dims}d_{bit_width + 1}b.bin")
 
         # Use factory function to get appropriate compressor for the variant
         self.kv_compressor = get_compressor_for_variant(
@@ -155,6 +155,7 @@ class LlamaCompressed(Llama):
             bit_width=bit_width,
             variant=self.variant,
         )
+
 
         with torch.device(device):
             self.model = Transformer(self.model_args, self.kv_compressor)

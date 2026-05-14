@@ -9,6 +9,12 @@ import torch
 from typing import Tuple, List
 from abc import ABC, abstractmethod
 
+# Force load PyTorch's OpenMP library globally so the C extension uses it
+try:
+    # This prevents the "__kmpc_for_static_fini" crash and thread collisions
+    ctypes.CDLL("libiomp5.so", mode=ctypes.RTLD_GLOBAL)
+except OSError:
+    pass # If not found, it might already be loaded by torch
 
 # ============================================================================
 # ctypes Structures
@@ -35,7 +41,6 @@ class TurboQuantBatchContextSIMD(ctypes.Structure):
     """Matches turboquant_batch_ctx_t from SIMD multi header."""
     _fields_ = [
         ("quantizer", ctypes.c_void_p),
-        ("threads", ctypes.POINTER(ctypes.c_void_p)),
         ("n_threads", ctypes.c_size_t),
         ("dims", ctypes.c_size_t),
         ("bit_width", ctypes.c_uint8),
@@ -177,7 +182,7 @@ class SIMDSingleCompressor(TurboQuantCompressorBase):
         original_l2 = torch.linalg.norm(block).item()
         
         if original_l2 < 1e-12:
-            n_bstring = (self.bit_width * self.block_size + 7) // 8
+            n_bstring = ((self.bit_width) * self.block_size + 7) // 8
             n_qjl = (self.block_size + 7) // 8
             return (original_l2, 0.0, bytes(n_bstring), bytes(n_qjl))
         
@@ -198,7 +203,7 @@ class SIMDSingleCompressor(TurboQuantCompressorBase):
                 raise RuntimeError(f"turboquant_prod_quantization failed with code {status}")
             
             res = result_ptr.contents
-            n_bstring = (self.bit_width * self.block_size + 7) // 8
+            n_bstring = ((self.bit_width) * self.block_size + 7) // 8
             n_qjl = (self.block_size + 7) // 8
             
             bstring_bytes = ctypes.string_at(res.bstring, n_bstring)
@@ -215,7 +220,7 @@ class SIMDSingleCompressor(TurboQuantCompressorBase):
     def decompress_chunk(self, results: List[Tuple[float, float, bytes, bytes]]) -> List[torch.Tensor]:
         """Sequential decompression for SIMD single."""
         outputs = []
-        n_bstring = (self.bit_width * self.block_size + 7) // 8
+        n_bstring = ((self.bit_width) * self.block_size + 7) // 8
         
         for original_l2, residual_l2, bstring_bytes, qjl_bytes in results:
             if original_l2 < 1e-12:
@@ -547,3 +552,4 @@ def get_compressor_for_variant(lib_path: str, context_path: str, block_size: int
 # Backward compatibility aliases
 TurboQuantCompressor = SIMDSingleCompressor
 TurboQuantBatchCompressor = SIMDBatchCompressor
+
