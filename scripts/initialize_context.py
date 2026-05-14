@@ -246,7 +246,6 @@ class TurboQuantBatchCtxSIMD(ctypes.Structure):
     """Mirrors turboquant_batch_ctx_t from simd-multi/turboquant.h"""
     _fields_ = [
         ("quantizer", ctypes.c_void_p),
-        ("threads", ctypes.c_void_p),
         ("n_threads", ctypes.c_size_t),
         ("dims", ctypes.c_size_t),
         ("bit_width", ctypes.c_uint8),
