@@ -8,7 +8,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 # Load environment variables from .env file
 ENV_PATH = PROJECT_ROOT / ".env"
-load_dotenv(ENV_PATH)
+load_dotenv(ENV_PATH, override=True)
 
 # Add llama-models to sys.path for absolute imports
 sys.path.insert(0, str(PROJECT_ROOT / 'model' / 'llama-models'))
