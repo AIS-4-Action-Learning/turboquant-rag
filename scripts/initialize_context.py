@@ -538,7 +538,7 @@ def main():
     try:
         # Initialize context
         print(f"\nInitializing TurboQuant context...")
-        lib, ctx, is_batch, is_simd = initialize_context(lib_path, dims, bit_width, n_streams, variant)
+        lib, ctx, is_batch, is_simd = initialize_context(lib_path, dims, bit_width - 1, n_streams, variant)
         
         print(f"  Type: {'SIMD' if is_simd else 'SIMT'} {'Batch' if is_batch else 'Single'}")
         
