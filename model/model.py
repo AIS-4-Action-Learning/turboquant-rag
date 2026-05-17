@@ -63,7 +63,10 @@ def apply_scaling(freqs: torch.Tensor) -> torch.Tensor:
 
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0, use_scaled: bool = False):
-    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
+    # --- THE FIX: Explicitly set device="cpu" so it escapes the meta trap ---
+    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2, device="cpu")[: (dim // 2)].float() / dim))
+    # ------------------------------------------------------------------------
+
     t = torch.arange(end, device=freqs.device, dtype=torch.float32)
     if use_scaled:
         freqs = apply_scaling(freqs)
@@ -201,6 +204,7 @@ class Attention(nn.Module):
                 self.n_local_kv_heads,
                 self.kv_cache_n_blocks,
             )
+
             self.cache_k_bstring = torch.zeros(
                 (*compressed_shape, self.kv_cache_bstring_bytes), dtype=torch.uint8
             )
@@ -250,10 +254,20 @@ class Attention(nn.Module):
         cache_qjl: torch.Tensor,
         cache_original_l2: torch.Tensor,
         cache_residual_l2: torch.Tensor,
+        label: str = "",
     ) -> None:
         """Vectorized storage: Uses bulk conversion to avoid Python loops."""
+        tensor = tensor.float().contiguous()
+        
         blocks = self._flatten_for_compression(tensor)
         compressed_results = self.kv_cache_compressor.compress_chunk(blocks)
+
+        # --- ASYNC MEMORY BARRIER ---
+        # Prevent Python's Garbage Collector from destroying tensor_f32
+        # before the asynchronous CUDA kernel finishes reading it!
+        if tensor.device.type == "cuda":
+            torch.cuda.synchronize()
+        # ------------------------------
 
         # Bulk convert bytes into flat buffers using list comprehensions (faster than loops)
         all_bstrings = b"".join([res[2] for res in compressed_results])
@@ -326,15 +340,12 @@ class Attention(nn.Module):
     ):
         bsz, seqlen, _ = x.shape
         xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
-
         xq = xq.view(bsz, seqlen, self.n_local_heads, self.head_dim)
         xk = xk.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
         xv = xv.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
-
         xq, xk = apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
 
         if self.use_compressed_kv_cache:
-
             self._store_compressed_cache(
                 xk,
                 bsz=bsz,
@@ -344,6 +355,7 @@ class Attention(nn.Module):
                 cache_qjl=self.cache_k_qjl,
                 cache_original_l2=self.cache_k_original_l2,
                 cache_residual_l2=self.cache_k_residual_l2,
+                label="K",
             )
             self._store_compressed_cache(
                 xv,
@@ -354,9 +366,11 @@ class Attention(nn.Module):
                 cache_qjl=self.cache_v_qjl,
                 cache_original_l2=self.cache_v_original_l2,
                 cache_residual_l2=self.cache_v_residual_l2,
+                label="V",
             )
 
             cache_len = start_pos + seqlen
+
             keys = self._fetch_decompressed_cache(
                 bsz=bsz,
                 cache_len=cache_len,
@@ -496,14 +510,29 @@ class Transformer(nn.Module):
     @torch.inference_mode()
     def forward(self, tokens: torch.Tensor, start_pos: int):
         _bsz, seqlen = tokens.shape
-        h = self.tok_embeddings(tokens)
+        
+        # Capture the original token device so we can return the logits to the right place
+        original_token_device = tokens.device
+
+        # 1. EMBEDDING PHASE (Dynamic)
+        # Move tokens to wherever the embedding layer lives (CPU for offload, GPU for pure CUDA)
+        embed_device = self.tok_embeddings.weight.device
+
+        # 1. CPU PHASE: Embeddings
+        # Ensure tokens are on CPU for the lookup
+        h = self.tok_embeddings(tokens.to(embed_device))
+
+        # 2. COMPUTE PHASE (Dynamic)
+        # Figure out where the heavy Transformer layers are
+        compute_device = next(self.layers[0].parameters()).device
+        h = h.to(compute_device)
+
         self.freqs_cis = self.freqs_cis.to(h.device)
         freqs_cis = self.freqs_cis[start_pos : start_pos + seqlen]
 
         mask = None
         if seqlen > 1:
             mask = torch.full((seqlen, seqlen), float("-inf"), device=tokens.device)
-
             mask = torch.triu(mask, diagonal=1)
 
             # https://github.com/pytorch/pytorch/issues/100005
@@ -521,5 +550,11 @@ class Transformer(nn.Module):
         for layer in self.layers:
             h = layer(h, start_pos, freqs_cis, mask)
         h = self.norm(h)
-        output = self.output(h).float()
-        return output
+
+        # 3. OUTPUT PHASE (Dynamic)
+        # Move hidden state to wherever the output projection layer lives
+        out_device = self.output.weight.device
+        h_out = h.to(out_device)
+        output = self.output(h_out).float()
+        
+        return output.to(original_token_device)

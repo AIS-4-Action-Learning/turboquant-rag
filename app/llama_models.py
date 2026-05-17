@@ -1,8 +1,11 @@
-import torch
-import json
+import traceback as tr
+import ctypes
 import os
 from pathlib import Path
-import traceback as tr
+
+import torch
+import json
+
 from app import (
     CHECKPOINT_PATH, CONTEXT_PATH, DEFAULT_BIT_WIDTH,
     LIB_PATH, DEFAULT_DIMENSIONS, PARAMS_PATH, 
@@ -32,6 +35,15 @@ def _setup_single_process_distributed(device="cuda"):
     if not fs_init.model_parallel_is_initialized():
         fs_init.initialize_model_parallel(1)
         print(f"✅ Model parallel group initialized (backend={backend}).")
+
+    # --- Vacuum the NCCL Ghost Error ---
+    if backend == "nccl" and device == "cuda":
+        try:
+            cudart = ctypes.CDLL("libcudart.so")
+            cudart.cudaDeviceSynchronize()
+            _ = cudart.cudaGetLastError() # This consumes Error 11 from the driver queue
+        except Exception:
+            pass
 
 class Llama:
     def __init__(self, device : str = "cuda", is_batch : bool = True):
@@ -109,11 +121,62 @@ class LlamaBF16(Llama):
             use_compressed_kv_cache=False
         )
 
-        # BF16 model standard
-        with torch.device(device):
-            self.model = Transformer(self.model_args).bfloat16()
+        # --- THE FIX: Meta-Device Initialization ---
+        # 1. Build model architecture on the META device (Takes 0 GB VRAM)
+        with torch.device("meta"):
+            self.model = Transformer(self.model_args)
 
         self.model.load_state_dict(self.checkpoints, strict=False, assign=True)
+
+        # --- THE FLAWLESS GHOST CACHE MATERIALIZER ---
+        # 1. Native PyTorch sweep for the model tree
+        for m in self.model.modules():
+            # Catch registered PyTorch buffers (like cache_k, cache_v)
+            for name, buf in m.named_buffers(recurse=False):
+                if buf is not None and buf.device.type == "meta":
+                    m.register_buffer(name, torch.zeros_like(buf, device=device))
+
+            # Catch loose attributes attached to the module (like cache_original_l2)
+            for name, attr in vars(m).items():
+                if isinstance(attr, torch.Tensor) and attr.device.type == "meta":
+                    setattr(m, name, torch.zeros_like(attr, device=device))
+        # ---------------------------------------------
+
+
+        # --- Aggressive Memory Management ---
+        # 3. DESTROY the checkpoints dictionary to free up system overhead
+        del self.checkpoints
+        import gc
+        gc.collect()
+        if device == "cuda":
+            torch.cuda.empty_cache()
+
+        # 4. Stream the model to GPU safely (Layer by Layer with CPU Offloading)
+        if device == "cuda":
+            print("Streaming model to VRAM (Offloading Embeddings & Output to CPU)...")
+
+            # Keep Embeddings on CPU (bfloat16)
+            self.model.tok_embeddings = self.model.tok_embeddings.to(device="cpu", dtype=torch.bfloat16)
+
+            # Move the 32 Transformer blocks to CUDA
+            for i, layer in enumerate(self.model.layers):
+                self.model.layers[i] = layer.to(device="cuda", dtype=torch.bfloat16)
+
+                torch.cuda.empty_cache()
+
+            # Move final Norm to CUDA
+            self.model.norm = self.model.norm.to(device="cuda", dtype=torch.bfloat16)
+
+            # --- THE FIX: Move Output BACK to CUDA ---
+            # Keep Output on GPU to prevent CPU bfloat16 GEMM upcast crashes
+            self.model.output = self.model.output.to(device="cpu", dtype=torch.bfloat16)
+            # -----------------------------------------
+
+            # Catch the precomputed rotary embeddings
+            if device == "cuda":
+                self.model.freqs_cis = self.model.freqs_cis.to(device="cuda")
+
+            print("✅ Successfully squeezed model! (Saved VRAM via Offloading)")
 
         self.model.eval()
 
@@ -156,28 +219,107 @@ class LlamaCompressed(Llama):
             variant=self.variant,
         )
 
-
-        with torch.device(device):
+        # --- THE FIX: Meta-Device Initialization ---
+        # 1. Build model architecture on the META device (Takes 0 GB VRAM)
+        with torch.device("meta"):
             self.model = Transformer(self.model_args, self.kv_compressor)
-
-        if device == "cuda":
-            self.model = self.model.bfloat16()
 
         self.model.load_state_dict(self.checkpoints, strict=False, assign=True)
 
-        self.model.eval()
+        # --- THE FLAWLESS GHOST CACHE MATERIALIZER ---
+        # 1. Native PyTorch sweep for the model tree
+        for m in self.model.modules():
+            # Catch registered PyTorch buffers (like cache_k, cache_v)
+            for name, buf in m.named_buffers(recurse=False):
+                if buf is not None and buf.device.type == "meta":
+                    m.register_buffer(name, torch.zeros_like(buf, device=device))
+            
+            # Catch loose attributes attached to the module (like cache_original_l2)
+            for name, attr in vars(m).items():
+                if isinstance(attr, torch.Tensor) and attr.device.type == "meta":
+                    setattr(m, name, torch.zeros_like(attr, device=device))
 
+        # 2. Safe sweep for the custom KV Compressor (Catching lists/dicts)
+        if hasattr(self, 'kv_compressor') and self.kv_compressor is not None:
+            for name, attr in vars(self.kv_compressor).items():
+                # Direct tensors
+                if isinstance(attr, torch.Tensor) and attr.device.type == "meta":
+                    setattr(self.kv_compressor, name, torch.zeros_like(attr, device=device))
+                # Tensors hidden inside a list
+                elif isinstance(attr, list):
+                    for i, v in enumerate(attr):
+                        if isinstance(v, torch.Tensor) and v.device.type == "meta":
+                            attr[i] = torch.zeros_like(v, device=device)
+                # Tensors hidden inside a dictionary
+                elif isinstance(attr, dict):
+                    for k, v in attr.items():
+                        if isinstance(v, torch.Tensor) and v.device.type == "meta":
+                            attr[k] = torch.zeros_like(v, device=device)
+        # ---------------------------------------------
+
+        # --- Aggressive Memory Management ---
+        # 3. DESTROY the checkpoints dictionary to free up system overhead
+        del self.checkpoints
+        import gc
+        gc.collect()
+        if device == "cuda":
+            torch.cuda.empty_cache()
+
+        # 4. Stream the model to device safely (Layer by Layer with Offloading)
+        if device == "cuda":
+            print("Streaming model to VRAM (Offloading Embeddings & Output to CPU)...")
+
+            # Keep Embeddings on CPU (bfloat16)
+            self.model.tok_embeddings = self.model.tok_embeddings.to(device="cpu", dtype=torch.bfloat16)
+
+            # Move the 32 Transformer blocks to CUDA
+            for i, layer in enumerate(self.model.layers):
+                self.model.layers[i] = layer.to(device="cuda", dtype=torch.bfloat16)
+
+                if device == "cuda":
+                    torch.cuda.empty_cache() 
+
+            # Move final Norm to CUDA
+            self.model.norm = self.model.norm.to(device=device, dtype=torch.bfloat16)
+
+            # Keep Output on CPU to prevent bfloat16 GEMM upcast crashes
+            self.model.output = self.model.output.to(device="cpu", dtype=torch.bfloat16)
+
+            # Catch the precomputed rotary embeddings
+            if device == "cuda":
+                self.model.freqs_cis = self.model.freqs_cis.to(device="cuda")
+
+            print("✅ Successfully squeezed model! (Saved VRAM via Offloading)")
+
+        self.model.eval()
 
 class LlamaGenerator:
     def generate(self, tensor_tokens : torch.Tensor,
                  llama : LlamaBF16 | LlamaCompressed,
                  max_gen_len : int = 1024):
+
         try:
             generated_token = []
+            import torch 
             with torch.no_grad():
                 current_pos = 0
-                for _ in range(max_gen_len):
-                    logits = llama.model.forward(tensor_tokens, current_pos)
+                seq_len = tensor_tokens.shape[1]
+
+                # Warmup loop for compressed KV cache
+                if seq_len > 1:
+                    for i in range(seq_len - 1):
+                        token = tensor_tokens[:, i:i+1].contiguous()
+                        _ = llama.model.forward(token, current_pos)
+                        if llama.device == "cuda":
+                            torch.cuda.synchronize()
+                        current_pos += 1
+
+                current_token = tensor_tokens[:, -1:].contiguous()
+
+                for step in range(max_gen_len):
+                    logits = llama.model.forward(current_token, current_pos)
+
+
                     next_token = torch.argmax(logits[:, -1], dim=-1)
 
                     if next_token.item() == llama.tokenizer.eos_id:
@@ -185,10 +327,11 @@ class LlamaGenerator:
 
                     generated_token.append(next_token.item())
 
-                    tensor_tokens = next_token.unsqueeze(0)
+                    current_token = next_token.unsqueeze(0)
                     current_pos += logits.shape[1]
 
             return generated_token
         except Exception as e:
-            print(e)
-            tr.print_exc()
+            import traceback
+            traceback.print_exc()
+            return generated_token

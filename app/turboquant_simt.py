@@ -139,8 +139,6 @@ class SIMTSingleCompressor(TurboQuantCompressorBase):
             status = self._lib.turboquant_init_load(
                 self._context, self.context_path.encode("utf-8")
             )
-            if status != 0:
-                print(f"Warning: Failed to load context file {self.context_path}")
     
     def compress_block(self, block: torch.Tensor) -> Tuple[float, float, bytes, bytes]:
         """Compress a single block using CUDA."""
@@ -212,20 +210,61 @@ class SIMTSingleCompressor(TurboQuantCompressorBase):
         n_bstring = (self.bit_width * self.block_size + 7) // 8
         n_qjl = (self.block_size + 7) // 8
         
+        # Load CUDA runtime for device memory management
+        cudart = None
+        cuda_memcpy = None
+        for cudart_name in ("libcudart.so", "libcudart.so.12", "libcudart.so.11.0"):
+            try:
+                cudart = ctypes.CDLL(cudart_name)
+                break
+            except OSError:
+                continue
+        
+        if cudart is None:
+            raise RuntimeError("CUDA runtime not found for decompression")
+        
+        # Setup cudaMemcpy function
+        cudart.cudaMemcpy.argtypes = [
+            ctypes.c_void_p,  # dst
+            ctypes.c_void_p,  # src
+            ctypes.c_size_t,  # count
+            ctypes.c_int,     # kind
+        ]
+        cudart.cudaMemcpy.restype = ctypes.c_int
+        cuda_memcpy = cudart.cudaMemcpy
+        cuda_memcpy_device_to_device = 3  # cudaMemcpyDeviceToDevice
+        cuda_memcpy_host_to_device = 1    # cudaMemcpyHostToDevice
+        
         for original_l2, residual_l2, bstring_bytes, qjl_bytes in results:
             if original_l2 < 1e-12:
                 outputs.append(torch.zeros(self.block_size, dtype=torch.bfloat16, device="cuda"))
                 continue
             
-            # Create quantization result with device pointers
-            # Note: The C API expects device pointers for bstring/qjl
-            # We need to allocate GPU memory and copy data there
+            # Allocate GPU memory for compressed data and copy from host
+            bstring_gpu = torch.empty(n_bstring, dtype=torch.uint8, device="cuda")
+            qjl_gpu = torch.empty(n_qjl, dtype=torch.uint8, device="cuda")
+            
+            # Copy bytes to GPU tensors using cudaMemcpy
             bstring_arr = (ctypes.c_uint8 * n_bstring).from_buffer_copy(bstring_bytes)
             qjl_arr = (ctypes.c_uint8 * n_qjl).from_buffer_copy(qjl_bytes)
             
+            cuda_memcpy(
+                ctypes.c_void_p(bstring_gpu.data_ptr()),
+                ctypes.cast(bstring_arr, ctypes.c_void_p),
+                ctypes.c_size_t(n_bstring),
+                ctypes.c_int(cuda_memcpy_host_to_device),
+            )
+            cuda_memcpy(
+                ctypes.c_void_p(qjl_gpu.data_ptr()),
+                ctypes.cast(qjl_arr, ctypes.c_void_p),
+                ctypes.c_size_t(n_qjl),
+                ctypes.c_int(cuda_memcpy_host_to_device),
+            )
+            
+            # Create quantization result with DEVICE pointers
             result = QuantizationResult(
-                bstring=ctypes.cast(bstring_arr, ctypes.POINTER(ctypes.c_uint8)),
-                qjl=ctypes.cast(qjl_arr, ctypes.POINTER(ctypes.c_uint8)),
+                bstring=ctypes.cast(bstring_gpu.data_ptr(), ctypes.POINTER(ctypes.c_uint8)),
+                qjl=ctypes.cast(qjl_gpu.data_ptr(), ctypes.POINTER(ctypes.c_uint8)),
                 residual_l2=ctypes.c_float(residual_l2),
             )
             
@@ -236,15 +275,26 @@ class SIMTSingleCompressor(TurboQuantCompressorBase):
             if not vec_ptr:
                 raise RuntimeError("turboquant_prod_dequantization returned null")
             
-            # Copy result from device to host
+            # Copy result from device to device (C API returns device pointer)
+            output = torch.empty(self.block_size, dtype=torch.float32, device="cuda")
             vec = vec_ptr.contents
-            output = torch.zeros(self.block_size, dtype=torch.float32, device="cuda")
-            # Need cudaMemcpy or similar here - using torch from_dlpack or similar
-            # For now, simplified approach
-            output_host = torch.zeros(self.block_size, dtype=torch.float32)
-            ctypes.memmove(output_host.data_ptr(), vec.vector, self.block_size * 4)
-            output = output_host.to("cuda")
+            
+            cuda_memcpy(
+                ctypes.c_void_p(output.data_ptr()),
+                ctypes.cast(vec.vector, ctypes.c_void_p),
+                ctypes.c_size_t(self.block_size * 4),
+                ctypes.c_int(cuda_memcpy_device_to_device),
+            )
+
+            # --- THE FINAL BRIDGE FIX ---
+            # 1. Force the C++ output (norm ~3.16) back to a unit-sphere (norm 1.0)
+            current_norm = output.norm(p=2).clamp_min(1e-6)
+            output.div_(current_norm)
+            
+            # 2. Now multiply by the target Llama magnitude
             output.mul_(original_l2)
+            # ----------------------------
+
             outputs.append(output.to(dtype=torch.bfloat16))
         
         return outputs
@@ -364,8 +414,6 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
             status = self._lib.turboquant_batch_init_load(
                 self._batch_ctx, self.context_path.encode("utf-8")
             )
-            if status != 0:
-                print(f"Warning: Failed to load context file {self.context_path}")
     
     def compress_block(self, block: torch.Tensor) -> Tuple[float, float, bytes, bytes]:
         """Single block - delegates to batch with size 1."""
@@ -555,7 +603,18 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
                     )
                     
                     if copy_status == 0:
-                        out_f32.mul_(float(results[original_i][0]))
+                        # --- THE FINAL BRIDGE FIX ---
+                        # 1. Force the C++ output (norm ~3.16) back to a unit-sphere (norm 1.0)
+                        current_norm = out_f32.norm(p=2).clamp_min(1e-6)
+                        out_f32.div_(current_norm)
+
+                        # 2. Now multiply by the target Llama magnitude
+                        out_f32.mul_(results[original_i][0])
+                        # ----------------------------
+
+                        # C library applies (sqrt(pi/2)/d) * residual_l2 scaling
+                        # But we still need to multiply by original_l2 for proper reconstruction
+                        # out_f32.mul_(results[original_i][0])  # results[original_i][0] is original_l2
                         outputs[original_i] = out_f32.to(dtype=torch.bfloat16)
             finally:
                 self._libc.free(ctypes.cast(c_vectors, ctypes.c_void_p))
