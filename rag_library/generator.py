@@ -15,7 +15,7 @@ Class hierarchy:
 
 import time
 from abc import ABC, abstractmethod
-
+from app.llama_models import LlamaBF16, LlamaCompressed, LlamaGenerator
 
 # ---------------------------------------------------------------------------
 # Public abstract base class
@@ -277,8 +277,18 @@ class BF16LlamaGenerator(_LlamaGeneratorBase, Generator):
         self.system_prompt = self.DEFAULT_SYSTEM_PROMPT
 
         # TODO: load the model here once framework is decided.
+        self.llama = LlamaBF16(self.max_tokens, 1)
+        self.llama_generator = LlamaGenerator()
 
     def generate(self, query: str, context: str) -> str:
+        try:
+            formatted_prompt = self._format_prompt(query, context)
+            _, prompt_tensors = self.llama.input_encoding(formatted_prompt)
+            generated_tokens = self.llama_generator.generate(prompt_tensors, self.llama, 1024)
+            response = self.llama.tokenizer.decode(generated_tokens)
+            return response
+        except Exception as e:
+            print(e)
         raise NotImplementedError(
             "BF16LlamaGenerator.generate not yet implemented. "
             "Awaiting framework decision and integration."
