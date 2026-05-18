@@ -15,6 +15,7 @@ Class hierarchy:
 
 import time
 from abc import ABC, abstractmethod
+from typing import no_type_check
 from app.llama_models import LlamaBF16, LlamaCompressed, LlamaGenerator
 
 # ---------------------------------------------------------------------------
@@ -277,6 +278,7 @@ class BF16LlamaGenerator(_LlamaGeneratorBase, Generator):
         self.system_prompt = self.DEFAULT_SYSTEM_PROMPT
 
         # TODO: load the model here once framework is decided.
+
         self.llama = LlamaBF16(self.max_tokens, 1)
         self.llama_generator = LlamaGenerator()
 
@@ -284,8 +286,10 @@ class BF16LlamaGenerator(_LlamaGeneratorBase, Generator):
         try:
             formatted_prompt = self._format_prompt(query, context)
             _, prompt_tensors = self.llama.input_encoding(formatted_prompt)
-            generated_tokens = self.llama_generator.generate(prompt_tensors, self.llama, 1024)
+
+            generated_tokens = self.llama_generator.generate(prompt_tensors, self.llama, self.max_tokens)
             response = self.llama.tokenizer.decode(generated_tokens)
+
             return response
         except Exception as e:
             print(e)
@@ -325,8 +329,20 @@ class TurboQuantLlamaGenerator(_LlamaGeneratorBase, Generator):
         self.system_prompt = self.DEFAULT_SYSTEM_PROMPT
 
         # TODO: load the model + apply TurboQuant compression here.
+        self.llama = LlamaCompressed(max_seq_length=self.max_tokens)
+        self.llama_generator = LlamaGenerator()
 
     def generate(self, query: str, context: str) -> str:
+        try:
+            formatted_prompt = self._format_prompt(query, context)
+            _, prompt_tensors = self.llama.input_encoding(formatted_prompt)
+
+            generated_tokens = self.llama_generator.generate(prompt_tensors, self.llama, self.max_tokens)
+            response = self.llama.tokenizer.decode(generated_tokens)
+
+            return response
+        except Exception as e:
+            print(e)
         raise NotImplementedError(
             "TurboQuantLlamaGenerator.generate not yet implemented. "
             "Awaiting TurboQuant kernel integration."
