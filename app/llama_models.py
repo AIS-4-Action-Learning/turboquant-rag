@@ -134,12 +134,12 @@ class LlamaBF16(Llama):
             # Catch registered PyTorch buffers (like cache_k, cache_v)
             for name, buf in m.named_buffers(recurse=False):
                 if buf is not None and buf.device.type == "meta":
-                    m.register_buffer(name, torch.zeros_like(buf, device=device))
+                    m.register_buffer(name, torch.zeros(buf.shape, dtype=buf.dtype, device=device))
 
             # Catch loose attributes attached to the module (like cache_original_l2)
             for name, attr in vars(m).items():
                 if isinstance(attr, torch.Tensor) and attr.device.type == "meta":
-                    setattr(m, name, torch.zeros_like(attr, device=device))
+                    setattr(m, name, torch.zeros(attr.shape, dtype=attr.dtype, device=device))
         # ---------------------------------------------
 
 
@@ -210,7 +210,7 @@ class LlamaCompressed(Llama):
             from app import PROJECT_ROOT
             context_path = str(PROJECT_ROOT / "artifacts" / f"turboquant_ctx_{dims}d_{bit_width + 1}b.bin")
 
-        # Use factory function to get appropriate compressor for the variant
+        # Your existing compressor init
         self.kv_compressor = get_compressor_for_variant(
             lib_path=str(self.lib_path),
             context_path=context_path,
@@ -232,30 +232,30 @@ class LlamaCompressed(Llama):
             # Catch registered PyTorch buffers (like cache_k, cache_v)
             for name, buf in m.named_buffers(recurse=False):
                 if buf is not None and buf.device.type == "meta":
-                    m.register_buffer(name, torch.zeros_like(buf, device=device))
+                    m.register_buffer(name, torch.zeros(buf.shape, dtype=buf.dtype, device=device))
             
-            # Catch loose attributes attached to the module (like cache_original_l2)
+            # Catch loose attributes attached to the module
             for name, attr in vars(m).items():
                 if isinstance(attr, torch.Tensor) and attr.device.type == "meta":
-                    setattr(m, name, torch.zeros_like(attr, device=device))
+                    setattr(m, name, torch.zeros(tuple(attr.shape), dtype=attr.dtype, device=device))
+
 
         # 2. Safe sweep for the custom KV Compressor (Catching lists/dicts)
         if hasattr(self, 'kv_compressor') and self.kv_compressor is not None:
             for name, attr in vars(self.kv_compressor).items():
                 # Direct tensors
                 if isinstance(attr, torch.Tensor) and attr.device.type == "meta":
-                    setattr(self.kv_compressor, name, torch.zeros_like(attr, device=device))
+                    setattr(self.kv_compressor, name, torch.zeros(attr.shape, dtype=attr.dtype, device=device))
                 # Tensors hidden inside a list
                 elif isinstance(attr, list):
                     for i, v in enumerate(attr):
                         if isinstance(v, torch.Tensor) and v.device.type == "meta":
-                            attr[i] = torch.zeros_like(v, device=device)
+                            attr[i] = torch.zeros(v.shape, dtype=v.dtype, device=device)
                 # Tensors hidden inside a dictionary
                 elif isinstance(attr, dict):
                     for k, v in attr.items():
                         if isinstance(v, torch.Tensor) and v.device.type == "meta":
-                            attr[k] = torch.zeros_like(v, device=device)
-        # ---------------------------------------------
+                            attr[k] = torch.zeros(v.shape, dtype=v.dtype, device=device)
 
         # --- Aggressive Memory Management ---
         # 3. DESTROY the checkpoints dictionary to free up system overhead
