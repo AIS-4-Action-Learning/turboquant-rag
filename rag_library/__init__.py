@@ -7,26 +7,28 @@ Public API:
     VectorStore: FAISS-backed similarity search.
 
     Generators (swappable):
-        Generator               — abstract base class
-        OpenAIGenerator         — OpenAI chat completion (prototyping)
-        BF16LlamaGenerator      — Llama 3.1 8B BF16 (research baseline) [stub]
+        Generator                — abstract base class
+        OpenAIGenerator          — OpenAI chat completion (paid)
+        GeminiGenerator          — Google Gemini (free tier, recommended for prototyping)
+        BF16LlamaGenerator       — Llama 3.1 8B BF16 (research baseline) [stub]
         TurboQuantLlamaGenerator — Llama 3.1 8B + TurboQuant (research) [stub]
 
     Embedders (swappable):
         Embedder                — abstract base class
-        OpenAIEmbedder          — OpenAI text-embedding-3-small (prototyping)
+        OpenAIEmbedder          — OpenAI text-embedding-3-small (paid)
+        GeminiEmbedder          — Gemini embedding-001 (free tier, recommended)
         BF16LlamaEmbedder       — Llama 3.1 8B BF16 hidden states [stub]
         TurboQuantLlamaEmbedder — Llama 3.1 8B + TurboQuant hidden states [stub]
 
 Example usage:
 
-    # Prototyping with OpenAI
-    >>> from rag_library import RAG, OpenAIGenerator, OpenAIEmbedder
-    >>> from openai import OpenAI
-    >>> client = OpenAI(api_key="...")
+    # Recommended for prototyping: Gemini (free, no credit card)
+    >>> from google import genai
+    >>> from rag_library import RAG, GeminiEmbedder, GeminiGenerator
+    >>> client = genai.Client(api_key="...")  # or set GEMINI_API_KEY env var
     >>> rag = RAG(
-    ...     embedder=OpenAIEmbedder(client),
-    ...     generator=OpenAIGenerator(client),
+    ...     embedder=GeminiEmbedder(client),
+    ...     generator=GeminiGenerator(client),
     ... )
     >>> rag.build_index("data/corpus.json")
     >>> result = rag.query("What is backpropagation?")
@@ -51,12 +53,14 @@ from .chunker import Chunker
 from .embedder import (
     Embedder,
     OpenAIEmbedder,
+    GeminiEmbedder,
     BF16LlamaEmbedder,
     TurboQuantLlamaEmbedder,
 )
 from .generator import (
     Generator,
     OpenAIGenerator,
+    GeminiGenerator,
     BF16LlamaGenerator,
     TurboQuantLlamaGenerator,
 )
@@ -73,11 +77,13 @@ __all__ = [
     # Generators
     "Generator",
     "OpenAIGenerator",
+    "GeminiGenerator",
     "BF16LlamaGenerator",
     "TurboQuantLlamaGenerator",
     # Embedders
     "Embedder",
     "OpenAIEmbedder",
+    "GeminiEmbedder",
     "BF16LlamaEmbedder",
     "TurboQuantLlamaEmbedder",
 ]

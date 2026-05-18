@@ -1,17 +1,23 @@
-# Vector store
+# Core dependencies for rag_library
+
+# Vector store (CPU build is fine for our research scale)
 faiss-cpu>=1.7.0
 numpy>=1.20
 
-# OpenAI client for prototyping
+# Gemini client — free-tier-friendly, recommended for prototyping
+google-genai>=0.3
+
+# OpenAI client — optional, only needed if using OpenAIGenerator/OpenAIEmbedder
 openai>=1.0
 
-# PDF extraction
+# PDF extraction (used by extract.py)
 pymupdf>=1.23
 
-# Optional but useful for example.py
+# Loading .env files (used by example.py)
 python-dotenv>=1.0
 
-# When Llama integrations land, add:
+# When the Llama generators/embedders are implemented, add their deps here.
+# Likely candidates (uncomment when needed):
 # torch>=2.0
 # transformers>=4.40
 # accelerate>=0.30

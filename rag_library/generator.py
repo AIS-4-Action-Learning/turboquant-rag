@@ -2,16 +2,18 @@
 Generator interface and implementations.
 
 A Generator takes a user query and retrieved context, and produces an answer.
-This is the component that gets swapped between OpenAI, BF16 Llama, and
-TurboQuant-compressed Llama for our research benchmarks.
+This is the component that gets swapped between OpenAI, Gemini, BF16 Llama,
+and TurboQuant-compressed Llama for our research benchmarks.
 
 Class hierarchy:
     Generator (ABC)
     ├── OpenAIGenerator
+    ├── GeminiGenerator
     ├── BF16LlamaGenerator      ──┐
     └── TurboQuantLlamaGenerator ──┴── both inherit shared logic from _LlamaGeneratorBase
 """
 
+import time
 from abc import ABC, abstractmethod
 
 
@@ -105,6 +107,105 @@ class OpenAIGenerator(Generator):
 
 
 # ---------------------------------------------------------------------------
+# Gemini implementation (Google's free-tier-friendly API)
+# ---------------------------------------------------------------------------
+
+class GeminiGenerator(Generator):
+    """Generator that uses Google's Gemini API.
+
+    Gemini has a genuinely free tier (no credit card, no expiration), making
+    it the best option for team prototyping without any out-of-pocket cost.
+
+    Defaults to `gemini-2.5-flash-lite` because it has the most generous free
+    rate limits (15 RPM, 1000 requests/day). Switch to `gemini-2.5-flash` or
+    `gemini-2.5-pro` for higher-quality responses (with lower daily caps).
+
+    NOTE: requests are rate-limited automatically by sleeping between calls
+    to stay under the per-minute RPM cap.
+    """
+
+    # Conservative defaults (one request every ~4.5s) keep us safely under the
+    # 15 RPM free-tier ceiling. Override in the constructor if needed.
+    DEFAULT_MIN_INTERVAL_SECONDS = 4.5
+
+    def __init__(
+        self,
+        client,
+        model: str = "gemini-2.5-flash-lite",
+        temperature: float = 0,
+        max_tokens: int = 500,
+        min_interval_seconds: float = DEFAULT_MIN_INTERVAL_SECONDS,
+    ):
+        """
+        Args:
+            client: An initialized google.genai.Client (passed in, not created
+                    here — same pattern as OpenAIGenerator).
+            model: Gemini model name. Free-tier options:
+                   - "gemini-2.5-flash-lite" (15 RPM, 1000/day — fastest free)
+                   - "gemini-2.5-flash"      (10 RPM, 250/day  — better quality)
+                   - "gemini-2.5-pro"        (5 RPM, 100/day   — best quality)
+            temperature: Sampling temperature (0 for deterministic).
+            max_tokens: Maximum tokens in the response.
+            min_interval_seconds: Minimum seconds between requests. Default
+                                  4.5s keeps us under 15 RPM for Flash-Lite.
+                                  Increase if using lower-RPM models.
+        """
+        self.client = client
+        self.model = model
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.min_interval_seconds = min_interval_seconds
+        self._last_request_time = 0.0
+
+        # System prompt is identical to OpenAIGenerator's — kept aligned so
+        # behavior is comparable across baselines.
+        self.system_prompt = """You are a helpful assistant.
+
+        Answer the question based STRICTLY on the provided context.
+
+        Rules:
+        - If the context doesn't contain the answer, say 'I don't have enough information to answer this.'
+        - Always cite which source your answer comes from using the format: (Source: <filename>, Page <number>).
+        - Use the context to answer, applying reasonable inference.
+        - If the answer comes from multiple chunks/sources, combine and cite all of them.
+        - If the question is yes/no, answer with only 'Yes' or 'No'
+        - If the question asks what NOT to do, infer the answer from what the context has
+        """
+
+    def _throttle(self) -> None:
+        """Sleep if needed to respect the per-minute rate limit."""
+        elapsed = time.time() - self._last_request_time
+        if elapsed < self.min_interval_seconds:
+            time.sleep(self.min_interval_seconds - elapsed)
+        self._last_request_time = time.time()
+
+    def generate(self, query: str, context: str) -> str:
+        # Gemini doesn't have a separate "system message" role like OpenAI;
+        # we prepend the system prompt to the user content.
+        prompt = (
+            f"{self.system_prompt}\n\n"
+            f"Context:\n{context}\n\n"
+            f"Question: {query}"
+        )
+
+        self._throttle()
+
+        # Lazy import so the SDK is only required when actually used.
+        from google.genai import types
+
+        response = self.client.models.generate_content(
+            model=self.model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=self.temperature,
+                max_output_tokens=self.max_tokens,
+            ),
+        )
+
+        return response.text
+
+
+# ---------------------------------------------------------------------------
 # Shared base for Llama-based generators
 # ---------------------------------------------------------------------------
 
@@ -193,10 +294,10 @@ class TurboQuantLlamaGenerator(_LlamaGeneratorBase, Generator):
 
     This is the EXPERIMENTAL configuration for our research. It runs Llama
     3.1 8B with TurboQuant compression applied to the KV cache (3-bit
-    target). Inference uses Hamza's custom C kernels for the compressed
+    target). Inference uses the custom C kernels for the compressed
     attention path.
 
-    STATUS: stub. To be implemented once Hamza's TurboQuant kernels are
+    STATUS: stub. To be implemented once the TurboQuant kernels are
     integrated as a Python library and the BF16 framework is chosen.
     """
 
@@ -218,21 +319,5 @@ class TurboQuantLlamaGenerator(_LlamaGeneratorBase, Generator):
     def generate(self, query: str, context: str) -> str:
         raise NotImplementedError(
             "TurboQuantLlamaGenerator.generate not yet implemented. "
-            "Awaiting Hamza's TurboQuant kernel integration."
+            "Awaiting TurboQuant kernel integration."
         )
-
-
-# --- rag-specific ---
-
-# Data files (large PDFs and processed corpora)
-data/
-
-# FAISS indexes (regeneratable from corpus.json)
-*.faiss
-
-# macOS
-.DS_Store
-
-# Editor configs (uncomment if your team agrees to ignore these)
-.vscode/
-.idea/

@@ -2,15 +2,17 @@
 Embedder interface and implementations.
 
 An Embedder turns text into vectors. Like Generator, this is swappable so
-we can compare OpenAI embeddings vs Llama-based embeddings in our research.
+we can compare OpenAI, Gemini, and Llama-based embeddings in our research.
 
 Class hierarchy:
     Embedder (ABC)
     ├── OpenAIEmbedder
+    ├── GeminiEmbedder
     ├── BF16LlamaEmbedder       ──┐
     └── TurboQuantLlamaEmbedder  ──┴── both inherit shared logic from _LlamaEmbedderBase
 """
 
+import time
 from abc import ABC, abstractmethod
 from typing import List
 
@@ -81,6 +83,87 @@ class OpenAIEmbedder(Embedder):
                 self.cost_tracker(response, is_embedding=True)
 
             embeddings.extend([d.embedding for d in response.data])
+
+        return embeddings
+
+
+# ---------------------------------------------------------------------------
+# Gemini implementation (Google's free-tier-friendly API)
+# ---------------------------------------------------------------------------
+
+class GeminiEmbedder(Embedder):
+    """Embedder that uses Google's Gemini embedding API.
+
+    Uses `gemini-embedding-001` by default — the production embedding model.
+    Like GeminiGenerator, this is free-tier-friendly and requires no payment
+    method.
+
+    Handles batching and rate-limiting internally so that indexing a large
+    corpus doesn't hit the per-minute request cap.
+    """
+
+    # Gemini's embed_content can take a list of inputs in one call, which
+    # counts as one request against the rate limit — much better than embedding
+    # one chunk at a time. Conservative batch size keeps payloads small.
+    DEFAULT_BATCH_SIZE = 100
+
+    # Embedding endpoint shares the per-project RPM limit. Sleep between batches
+    # to stay safely under 15 RPM on the free tier.
+    DEFAULT_MIN_INTERVAL_SECONDS = 4.5
+
+    def __init__(
+        self,
+        client,
+        model: str = "gemini-embedding-001",
+        batch_size: int = DEFAULT_BATCH_SIZE,
+        output_dimensionality: int = 768,
+        min_interval_seconds: float = DEFAULT_MIN_INTERVAL_SECONDS,
+    ):
+        """
+        Args:
+            client: An initialized google.genai.Client.
+            model: Gemini embedding model name. Default is the production model.
+            batch_size: Number of texts per embed_content call.
+            output_dimensionality: Embedding vector length. gemini-embedding-001
+                                   supports 768, 1536, or 3072 (default 3072).
+                                   We default to 768 to keep the FAISS index
+                                   small and retrieval fast.
+            min_interval_seconds: Minimum seconds between batched calls.
+        """
+        self.client = client
+        self.model = model
+        self.batch_size = batch_size
+        self.output_dimensionality = output_dimensionality
+        self.min_interval_seconds = min_interval_seconds
+        self._last_request_time = 0.0
+
+    def _throttle(self) -> None:
+        """Sleep if needed to respect the per-minute rate limit."""
+        elapsed = time.time() - self._last_request_time
+        if elapsed < self.min_interval_seconds:
+            time.sleep(self.min_interval_seconds - elapsed)
+        self._last_request_time = time.time()
+
+    def embed(self, texts: List[str]) -> List[List[float]]:
+        # Lazy import so the SDK is only required when actually used.
+        from google.genai import types
+
+        embeddings = []
+
+        for i in range(0, len(texts), self.batch_size):
+            batch = texts[i : i + self.batch_size]
+
+            self._throttle()
+
+            response = self.client.models.embed_content(
+                model=self.model,
+                contents=batch,
+                config=types.EmbedContentConfig(
+                    output_dimensionality=self.output_dimensionality,
+                ),
+            )
+
+            embeddings.extend([e.values for e in response.embeddings])
 
         return embeddings
 
@@ -162,7 +245,7 @@ class TurboQuantLlamaEmbedder(_LlamaEmbedderBase, Embedder):
     TurboQuant compression applied. Used to evaluate whether compression
     affects the quality of retrieval embeddings, not just generation.
 
-    STATUS: stub. Awaiting Hamza's TurboQuant kernel integration.
+    STATUS: stub. Awaiting TurboQuant kernel integration.
     """
 
     def __init__(
@@ -189,5 +272,5 @@ class TurboQuantLlamaEmbedder(_LlamaEmbedderBase, Embedder):
     def embed(self, texts: List[str]) -> List[List[float]]:
         raise NotImplementedError(
             "TurboQuantLlamaEmbedder.embed not yet implemented. "
-            "Awaiting Hamza's TurboQuant kernel integration."
+            "Awaiting the TurboQuant kernel integration."
         )
