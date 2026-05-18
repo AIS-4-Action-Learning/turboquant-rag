@@ -258,7 +258,7 @@ class Attention(nn.Module):
     ) -> None:
         """Vectorized storage: Uses bulk conversion to avoid Python loops."""
         tensor = tensor.float().contiguous()
-        
+
         blocks = self._flatten_for_compression(tensor)
         compressed_results = self.kv_cache_compressor.compress_chunk(blocks)
 

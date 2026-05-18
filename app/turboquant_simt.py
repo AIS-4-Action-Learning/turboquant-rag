@@ -425,8 +425,8 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
         batch_size = len(blocks)
         if batch_size == 0:
             return []
-        if batch_size > 255:
-            raise ValueError(f"Batch size {batch_size} exceeds C API limit (max 255)")
+        # if batch_size > 255:
+        #    raise ValueError(f"Batch size {batch_size} exceeds C API limit (max 255)")
         
         # Move blocks to CUDA and process
         original_l2s = []
@@ -524,8 +524,8 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
         batch_size = len(results)
         if batch_size == 0:
             return []
-        if batch_size > 255:
-            raise ValueError(f"Batch size {batch_size} exceeds C API limit (max 255)")
+        # if batch_size > 255:
+        #    raise ValueError(f"Batch size {batch_size} exceeds C API limit (max 255)")
         
         if not self._batch_ctx or not self._batch_ctx.contents.is_init:
             raise RuntimeError("TurboQuant batch context is not initialized")
