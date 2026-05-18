@@ -42,6 +42,14 @@ class TurboQuantBatchContext(ctypes.Structure):
         ("n_streams", ctypes.c_uint8),
         ("dims", ctypes.c_size_t),
         ("bit_width", ctypes.c_uint8),
+        ("batch_result_storage", ctypes.c_void_p),
+        ("batch_bstring_storage", ctypes.c_void_p),
+        ("batch_qjl_storage", ctypes.c_void_p),
+        ("batch_result_capacity", ctypes.c_uint32),
+        ("batch_output_ptrs", ctypes.c_void_p),
+        ("batch_output_storage", ctypes.c_void_p),
+        ("batch_output_device_storage", ctypes.c_void_p),
+        ("batch_output_capacity", ctypes.c_uint32),
         ("is_init", ctypes.c_uint8),
     ]
 
@@ -350,6 +358,9 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
             ]
             self._cudart.cudaMemcpy.restype = ctypes.c_int
             self._cuda_memcpy = self._cudart.cudaMemcpy
+            self._cudart.cudaFree.argtypes = [ctypes.c_void_p]
+            self._cudart.cudaFree.restype = ctypes.c_int
+            self._cuda_free = self._cudart.cudaFree
         
         # Batch context lifecycle
         lib.turboquant_batch_init.argtypes = [
@@ -469,8 +480,6 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
         vec_array = (ctypes.POINTER(Vector) * chunk_size)(*vec_ptrs)
         
         batch_result = QuantizationBatchResult()
-        batch_result.n_results = 0
-        batch_result.results = None
         
         # FIRE ONCE
         status = self._lib.turboquant_prod_quantization_batch(
@@ -488,7 +497,7 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
             bstring_bytes = ctypes.string_at(res.bstring, n_bstring)
             qjl_bytes = ctypes.string_at(res.qjl, n_qjl)
             results[original_i] = (original_l2s[original_i], float(res.residual_l2), bstring_bytes, qjl_bytes)
-        
+            
         return results
 
 
@@ -510,24 +519,24 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
             return outputs
         
         chunk_size = len(active_indices)
+
+        all_bstrings = b"".join([results[i][2] for i in active_indices])
+        all_qjls = b"".join([results[i][3] for i in active_indices])
+
+        massive_bstring_arr = (ctypes.c_uint8 * len(all_bstrings)).from_buffer_copy(all_bstrings)
+        massive_qjl_arr = (ctypes.c_uint8 * len(all_qjls)).from_buffer_copy(all_qjls)
+
+        base_bstring_ptr = ctypes.addressof(massive_bstring_arr)
+        base_qjl_ptr = ctypes.addressof(massive_qjl_arr)
         
         # --- THE MASSIVE ONE-SHOT ARRAY ---
         c_results_array = (QuantizationResult * chunk_size)()
-        keepalive_bstring = []
-        keepalive_qjl = []
         
         for chunk_i, original_i in enumerate(active_indices):
-            _, residual_l2, bstring_bytes, qjl_bytes = results[original_i]
-            
-            bstring_arr = (ctypes.c_uint8 * n_bstring).from_buffer_copy(bstring_bytes)
-            qjl_arr = (ctypes.c_uint8 * n_qjl).from_buffer_copy(qjl_bytes)
-            keepalive_bstring.append(bstring_arr)
-            keepalive_qjl.append(qjl_arr)
-            
             c_results_array[chunk_i] = QuantizationResult(
-                bstring=ctypes.cast(bstring_arr, ctypes.POINTER(ctypes.c_uint8)),
-                qjl=ctypes.cast(qjl_arr, ctypes.POINTER(ctypes.c_uint8)),
-                residual_l2=ctypes.c_float(float(residual_l2)),
+                bstring=ctypes.cast(base_bstring_ptr + chunk_i * n_bstring, ctypes.POINTER(ctypes.c_uint8)),
+                qjl=ctypes.cast(base_qjl_ptr + chunk_i * n_qjl, ctypes.POINTER(ctypes.c_uint8)),
+                residual_l2=ctypes.c_float(float(results[original_i][1])),
             )
         
         batch_input = QuantizationBatchResult(
@@ -543,31 +552,29 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
         
         if not c_vectors:
             raise RuntimeError("turboquant_prod_dequantization_batch returned null")
-        
-        try:
-            for chunk_i, original_i in enumerate(active_indices):
-                vec_ptr = c_vectors[chunk_i]
-                if not vec_ptr:
-                    continue
-                
-                vec = vec_ptr.contents
-                out_f32 = torch.empty(self.block_size, dtype=torch.float32, device="cuda")
-                
-                copy_status = self._cuda_memcpy(
-                    ctypes.c_void_p(out_f32.data_ptr()),
-                    ctypes.cast(vec.vector, ctypes.c_void_p),
-                    ctypes.c_size_t(self.block_size * 4),
-                    ctypes.c_int(self._cuda_memcpy_device_to_device),
-                )
-                
-                if copy_status == 0:
-                    current_norm = out_f32.norm(p=2).clamp_min(1e-6)
-                    out_f32.div_(current_norm)
-                    out_f32.mul_(results[original_i][0])
-                    outputs[original_i] = out_f32.to(dtype=torch.bfloat16)
-        finally:
-            self._libc.free(ctypes.cast(c_vectors, ctypes.c_void_p))
-        
+       
+        # ONE MASSIVE PYTORCH ZERO-LOOP MEMCPY
+        first_vector_ptr = c_vectors[0].contents.vector
+        massive_out_f32 = torch.empty((chunk_size, self.block_size), dtype=torch.float32, device="cuda")
+
+        self._cuda_memcpy(
+            ctypes.c_void_p(massive_out_f32.data_ptr()),
+            ctypes.cast(first_vector_ptr, ctypes.c_void_p),
+            ctypes.c_size_t(chunk_size * self.block_size * 4),
+            ctypes.c_int(self._cuda_memcpy_device_to_device),
+        )
+
+        original_l2s_tensor = torch.tensor([results[i][0] for i in active_indices], dtype=torch.float32, device="cuda").unsqueeze(1)
+        current_norms = massive_out_f32.norm(p=2, dim=1, keepdim=True).clamp_min(1e-6)
+
+        massive_out_f32.div_(current_norms).mul_(original_l2s_tensor)
+        massive_out_bf16 = massive_out_f32.to(dtype=torch.bfloat16)
+
+        list_of_tensors = list(torch.unbind(massive_out_bf16, dim=0))
+
+        for i, original_i in enumerate(active_indices):
+            outputs[original_i] = list_of_tensors[i]
+
         return outputs
 
     def close(self):
