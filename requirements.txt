@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Core dependencies for rag_library
 
 # Vector store (CPU build is fine for our research scale)
@@ -21,3 +22,6 @@ python-dotenv>=1.0
 # torch>=2.0
 # transformers>=4.40
 # accelerate>=0.30
+torch>=2.0.0
+fairscale>=0.4.13
+tiktoken>=0.12.0

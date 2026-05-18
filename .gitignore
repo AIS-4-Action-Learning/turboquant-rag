@@ -217,7 +217,6 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-
 # --- rag library-specific ---
 
 # Data files (large PDFs and processed corpora)
@@ -232,3 +231,6 @@ data/
 # Editor configs
 .vscode/
 .idea/
+artifacts
+debug
+pyrightconfig.json
