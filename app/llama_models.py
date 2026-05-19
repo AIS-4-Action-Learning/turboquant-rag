@@ -406,7 +406,10 @@ class LlamaGenerator:
 
                     next_token = torch.argmax(logits[:, -1], dim=-1)
 
-                    if next_token.item() == llama.tokenizer.eos_id:
+                    # Llama 3.1 chat uses <|eot_id|> (128009) to end turns.
+                    # Fallback to <|eos_id|> (128001) for safety.
+                    stop_ids = {128009, 128001}
+                    if next_token.item() in stop_ids:
                         break
 
                     generated_token.append(next_token.item())

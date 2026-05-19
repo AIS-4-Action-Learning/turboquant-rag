@@ -236,17 +236,24 @@ class _LlamaGeneratorBase:
     """
 
     def _format_prompt(self, query: str, context: str) -> str:
-        """Format query + context into a single prompt string for Llama.
+        """Format query + context into a Llama 3.1 chat-template string.
 
-        TODO (when implementing): wrap with the actual Llama 3.1 chat template
-        once we settle on the inference framework (HuggingFace transformers,
-        llama.cpp, vLLM, etc.).
+        Llama 3.1 is instruction-tuned on a strict chat template. Without it,
+        the model produces incoherent noise and repetitive loops.
         """
-        return (
-            f"{self.system_prompt}\n\n"
+        user_content = (
             f"Context:\n{context}\n\n"
-            f"Question: {query}\n\n"
-            f"Answer:"
+            f"Question: {query}"
+        )
+
+        # Llama 3.1 chat template (IDs: <|begin_of_text|>=128000,
+        # <|start_header_id|>=128006, <|end_header_id|>=128007, <|eot_id|>=128009)
+        return (
+            f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n"
+            f"{self.DEFAULT_SYSTEM_PROMPT}<|eot_id|>"
+            f"<|start_header_id|>user<|end_header_id|>\n\n"
+            f"{user_content}<|eot_id|>"
+            f"<|start_header_id|>assistant<|end_header_id|>\n\n"
         )
 
 
@@ -283,20 +290,18 @@ class BF16LlamaGenerator(_LlamaGeneratorBase, Generator):
         self.llama_generator = LlamaGenerator()
 
     def generate(self, query: str, context: str) -> str:
-        try:
-            formatted_prompt = self._format_prompt(query, context)
-            _, prompt_tensors = self.llama.input_encoding(formatted_prompt)
+        formatted_prompt = self._format_prompt(query, context)
+        prompt_tokens, prompt_tensors = self.llama.input_encoding(formatted_prompt)
+        prompt_len = len(prompt_tokens)
+        gen_limit = max(0, self.max_tokens - prompt_len)
 
-            generated_tokens = self.llama_generator.generate(prompt_tensors, self.llama, self.max_tokens)
-            response = self.llama.tokenizer.decode(generated_tokens)
+        generated_tokens = self.llama_generator.generate(prompt_tensors, self.llama, gen_limit)
+        response = self.llama.tokenizer.decode(generated_tokens)
 
-            return response
-        except Exception as e:
-            print(e)
-        raise NotImplementedError(
-            "BF16LlamaGenerator.generate not yet implemented. "
-            "Awaiting framework decision and integration."
-        )
+        for tok in ("<|eot_id|>", "<|eos_id|>", "<|end_of_text|>",
+                    "<|start_header_id|>", "<|end_header_id|>"):
+            response = response.replace(tok, "")
+        return response.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -333,17 +338,15 @@ class TurboQuantLlamaGenerator(_LlamaGeneratorBase, Generator):
         self.llama_generator = LlamaGenerator()
 
     def generate(self, query: str, context: str) -> str:
-        try:
-            formatted_prompt = self._format_prompt(query, context)
-            _, prompt_tensors = self.llama.input_encoding(formatted_prompt)
+        formatted_prompt = self._format_prompt(query, context)
+        prompt_tokens, prompt_tensors = self.llama.input_encoding(formatted_prompt)
+        prompt_len = len(prompt_tokens)
+        gen_limit = max(0, self.max_tokens - prompt_len)
 
-            generated_tokens = self.llama_generator.generate(prompt_tensors, self.llama, self.max_tokens)
-            response = self.llama.tokenizer.decode(generated_tokens)
+        generated_tokens = self.llama_generator.generate(prompt_tensors, self.llama, gen_limit)
+        response = self.llama.tokenizer.decode(generated_tokens)
 
-            return response
-        except Exception as e:
-            print(e)
-        raise NotImplementedError(
-            "TurboQuantLlamaGenerator.generate not yet implemented. "
-            "Awaiting TurboQuant kernel integration."
-        )
+        for tok in ("<|eot_id|>", "<|eos_id|>", "<|end_of_text|>",
+                    "<|start_header_id|>", "<|end_header_id|>"):
+            response = response.replace(tok, "")
+        return response.strip()
