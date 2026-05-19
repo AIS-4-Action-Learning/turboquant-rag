@@ -139,7 +139,8 @@ class LlamaBF16(Llama):
             # Catch loose attributes attached to the module (like cache_original_l2)
             for name, attr in vars(m).items():
                 if isinstance(attr, torch.Tensor) and attr.device.type == "meta":
-                    setattr(m, name, torch.zeros(attr.shape, dtype=attr.dtype, device=device))
+                    # FIX 1: Added tuple() cast
+                    setattr(m, name, torch.zeros(tuple(attr.shape), dtype=attr.dtype, device=device))
         # ---------------------------------------------
 
 
@@ -161,11 +162,12 @@ class LlamaBF16(Llama):
             # Move the 32 Transformer blocks to CUDA
             for i, layer in enumerate(self.model.layers):
                 self.model.layers[i] = layer.to(device="cuda", dtype=torch.bfloat16)
+                # FIX 2: Added safety check
+                if device == "cuda":
+                    torch.cuda.empty_cache()
 
-                torch.cuda.empty_cache()
-
-            # Move final Norm to CUDA
-            self.model.norm = self.model.norm.to(device="cuda", dtype=torch.bfloat16)
+            # FIX 3: Replaced "cuda" with dynamic device variable
+            self.model.norm = self.model.norm.to(device=device, dtype=torch.bfloat16)
 
             # --- THE FIX: Move Output BACK to CUDA ---
             # Keep Output on GPU to prevent CPU bfloat16 GEMM upcast crashes
