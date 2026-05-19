@@ -42,6 +42,14 @@ class TurboQuantBatchContext(ctypes.Structure):
         ("n_streams", ctypes.c_uint8),
         ("dims", ctypes.c_size_t),
         ("bit_width", ctypes.c_uint8),
+        ("batch_result_storage", ctypes.c_void_p),
+        ("batch_bstring_storage", ctypes.c_void_p),
+        ("batch_qjl_storage", ctypes.c_void_p),
+        ("batch_result_capacity", ctypes.c_uint32),
+        ("batch_output_ptrs", ctypes.c_void_p),
+        ("batch_output_storage", ctypes.c_void_p),
+        ("batch_output_device_storage", ctypes.c_void_p),
+        ("batch_output_capacity", ctypes.c_uint32),
         ("is_init", ctypes.c_uint8),
     ]
 
@@ -50,7 +58,7 @@ class QuantizationBatchResult(ctypes.Structure):
     """Mirrors quantization_batch_result from simt headers."""
     _fields_ = [
         ("results", ctypes.POINTER(QuantizationResult)),
-        ("n_results", ctypes.c_uint8),
+        ("n_results", ctypes.c_uint32),
     ]
 
 
@@ -350,6 +358,9 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
             ]
             self._cudart.cudaMemcpy.restype = ctypes.c_int
             self._cuda_memcpy = self._cudart.cudaMemcpy
+            self._cudart.cudaFree.argtypes = [ctypes.c_void_p]
+            self._cudart.cudaFree.restype = ctypes.c_int
+            self._cuda_free = self._cudart.cudaFree
         
         # Batch context lifecycle
         lib.turboquant_batch_init.argtypes = [
@@ -382,7 +393,7 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
             ctypes.POINTER(TurboQuantBatchContext),
             ctypes.POINTER(ctypes.POINTER(Vector)),
             ctypes.POINTER(QuantizationBatchResult),
-            ctypes.c_uint8,
+            ctypes.c_uint32,
         ]
         lib.turboquant_prod_quantization_batch.restype = ctypes.c_uint8
         
@@ -419,16 +430,13 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
         """Single block - delegates to batch with size 1."""
         results = self.compress_chunk([block])
         return results[0]
-    
+
+
     def compress_chunk(self, blocks: List[torch.Tensor]) -> List[Tuple[float, float, bytes, bytes]]:
-        """Parallel batch compression using multiple CUDA streams."""
         batch_size = len(blocks)
         if batch_size == 0:
             return []
-        if batch_size > 255:
-            raise ValueError(f"Batch size {batch_size} exceeds C API limit (max 255)")
         
-        # Move blocks to CUDA and process
         original_l2s = []
         active_indices = []
         active_blocks_f32 = []
@@ -439,18 +447,8 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
             
             gpu_block = block.detach().to(dtype=torch.bfloat16).contiguous()
             
-            if gpu_block.numel() > self.block_size:
-                raise ValueError(
-                    f"Block at index {i} has {gpu_block.numel()} elements, expected <= {self.block_size}"
-                )
-            
-            # Handle padding
             if gpu_block.numel() < self.block_size:
-                padding = torch.zeros(
-                    self.block_size - gpu_block.numel(),
-                    dtype=torch.bfloat16,
-                    device="cuda"
-                )
+                padding = torch.zeros(self.block_size - gpu_block.numel(), dtype=torch.bfloat16, device="cuda")
                 gpu_block = torch.cat([gpu_block, padding])
             
             original_l2 = torch.linalg.norm(gpu_block.float()).item()
@@ -463,164 +461,122 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
         n_bstring = (self.bit_width * self.block_size + 7) // 8
         n_qjl = (self.block_size + 7) // 8
         
-        # Initialize outputs
-        results = [
-            (original_l2, 0.0, bytes(n_bstring), bytes(n_qjl))
-            for original_l2 in original_l2s
-        ]
+        results = [(original_l2, 0.0, bytes(n_bstring), bytes(n_qjl)) for original_l2 in original_l2s]
         
         if not active_blocks_f32:
             return results
         
-        # Process in chunks <= n_streams
-        for start in range(0, len(active_blocks_f32), self.n_streams):
-            end = min(start + self.n_streams, len(active_blocks_f32))
-            chunk_size = end - start
-            chunk_blocks = active_blocks_f32[start:end]
-            chunk_indices = active_indices[start:end]
-            
-            # Create vector array
-            vectors = []
-            vec_ptrs = []
-            for block in chunk_blocks:
-                c_ptr = ctypes.cast(block.data_ptr(), ctypes.POINTER(ctypes.c_float))
-                vec = Vector(n=self.block_size, vector=c_ptr)
-                vectors.append(vec)
-                vec_ptrs.append(ctypes.pointer(vec))
-            
-            vec_array = (ctypes.POINTER(Vector) * chunk_size)(*vec_ptrs)
-            
-            # Allocate batch result
-            batch_result = QuantizationBatchResult()
-            batch_result.n_results = 0
-            batch_result.results = None
-            
-            status = self._lib.turboquant_prod_quantization_batch(
-                self._batch_ctx,
-                vec_array,
-                ctypes.byref(batch_result),
-                ctypes.c_uint8(chunk_size),
-            )
-            
-            if status != 0:
-                raise RuntimeError(f"turboquant_prod_quantization_batch failed with code {status}")
-            
-            # Extract results
-            for chunk_i, original_i in enumerate(chunk_indices):
-                res = batch_result.results[chunk_i]
-                bstring_bytes = ctypes.string_at(res.bstring, n_bstring)
-                qjl_bytes = ctypes.string_at(res.qjl, n_qjl)
-                results[original_i] = (
-                    original_l2s[original_i],
-                    float(res.residual_l2),
-                    bstring_bytes,
-                    qjl_bytes,
-                )
+        chunk_size = len(active_blocks_f32)
         
+        # --- THE MASSIVE ONE-SHOT ARRAY ---
+        vectors = []
+        vec_ptrs = []
+        for block in active_blocks_f32:
+            c_ptr = ctypes.cast(block.data_ptr(), ctypes.POINTER(ctypes.c_float))
+            vec = Vector(n=self.block_size, vector=c_ptr)
+            vectors.append(vec)
+            vec_ptrs.append(ctypes.pointer(vec))
+        
+        vec_array = (ctypes.POINTER(Vector) * chunk_size)(*vec_ptrs)
+        
+        batch_result = QuantizationBatchResult()
+        
+        # FIRE ONCE
+        status = self._lib.turboquant_prod_quantization_batch(
+            self._batch_ctx,
+            vec_array,
+            ctypes.byref(batch_result),
+            ctypes.c_uint32(chunk_size), # <--- 32-bit cast
+        )
+        
+        if status != 0:
+            raise RuntimeError(f"turboquant_prod_quantization_batch failed with code {status}")
+        
+        for chunk_i, original_i in enumerate(active_indices):
+            res = batch_result.results[chunk_i]
+            bstring_bytes = ctypes.string_at(res.bstring, n_bstring)
+            qjl_bytes = ctypes.string_at(res.qjl, n_qjl)
+            results[original_i] = (original_l2s[original_i], float(res.residual_l2), bstring_bytes, qjl_bytes)
+            
         return results
-    
+
+
     def decompress_chunk(self, results: List[Tuple[float, float, bytes, bytes]]) -> List[torch.Tensor]:
-        """Parallel batch decompression using multiple CUDA streams."""
         batch_size = len(results)
         if batch_size == 0:
             return []
-        if batch_size > 255:
-            raise ValueError(f"Batch size {batch_size} exceeds C API limit (max 255)")
         
         if not self._batch_ctx or not self._batch_ctx.contents.is_init:
             raise RuntimeError("TurboQuant batch context is not initialized")
-        if self._cuda_memcpy is None:
-            raise RuntimeError("CUDA runtime is required for decompression")
         
         n_bstring = (self.bit_width * self.block_size + 7) // 8
         n_qjl = (self.block_size + 7) // 8
         
-        outputs = [
-            torch.zeros(self.block_size, dtype=torch.bfloat16, device="cuda")
-            for _ in range(batch_size)
-        ]
-        active_indices = []
+        outputs = [torch.zeros(self.block_size, dtype=torch.bfloat16, device="cuda") for _ in range(batch_size)]
         
-        for i, (original_l2, _, _, _) in enumerate(results):
-            if original_l2 >= 1e-12:
-                active_indices.append(i)
-        
+        active_indices = [i for i, (orig_l2, _, _, _) in enumerate(results) if orig_l2 >= 1e-12]
         if not active_indices:
             return outputs
         
-        # Process in chunks
-        for start in range(0, len(active_indices), self.n_streams):
-            end = min(start + self.n_streams, len(active_indices))
-            chunk_indices = active_indices[start:end]
-            chunk_size = len(chunk_indices)
-            
-            # Create results array
-            c_results_array = (QuantizationResult * chunk_size)()
-            keepalive_bstring = []
-            keepalive_qjl = []
-            
-            for chunk_i, original_i in enumerate(chunk_indices):
-                _, residual_l2, bstring_bytes, qjl_bytes = results[original_i]
-                
-                bstring_arr = (ctypes.c_uint8 * n_bstring).from_buffer_copy(bstring_bytes)
-                qjl_arr = (ctypes.c_uint8 * n_qjl).from_buffer_copy(qjl_bytes)
-                keepalive_bstring.append(bstring_arr)
-                keepalive_qjl.append(qjl_arr)
-                
-                c_results_array[chunk_i] = QuantizationResult(
-                    bstring=ctypes.cast(bstring_arr, ctypes.POINTER(ctypes.c_uint8)),
-                    qjl=ctypes.cast(qjl_arr, ctypes.POINTER(ctypes.c_uint8)),
-                    residual_l2=ctypes.c_float(float(residual_l2)),
-                )
-            
-            batch_input = QuantizationBatchResult(
-                results=ctypes.cast(c_results_array, ctypes.POINTER(QuantizationResult)),
-                n_results=ctypes.c_uint8(chunk_size),
-            )
-            
-            c_vectors = self._lib.turboquant_prod_dequantization_batch(
-                self._batch_ctx,
-                ctypes.byref(batch_input)
-            )
-            
-            if not c_vectors:
-                raise RuntimeError("turboquant_prod_dequantization_batch returned null")
-            
-            try:
-                for chunk_i, original_i in enumerate(chunk_indices):
-                    vec_ptr = c_vectors[chunk_i]
-                    if not vec_ptr:
-                        continue
-                    
-                    vec = vec_ptr.contents
-                    out_f32 = torch.empty(self.block_size, dtype=torch.float32, device="cuda")
-                    
-                    copy_status = self._cuda_memcpy(
-                        ctypes.c_void_p(out_f32.data_ptr()),
-                        ctypes.cast(vec.vector, ctypes.c_void_p),
-                        ctypes.c_size_t(self.block_size * 4),
-                        ctypes.c_int(self._cuda_memcpy_device_to_device),
-                    )
-                    
-                    if copy_status == 0:
-                        # --- THE FINAL BRIDGE FIX ---
-                        # 1. Force the C++ output (norm ~3.16) back to a unit-sphere (norm 1.0)
-                        current_norm = out_f32.norm(p=2).clamp_min(1e-6)
-                        out_f32.div_(current_norm)
+        chunk_size = len(active_indices)
 
-                        # 2. Now multiply by the target Llama magnitude
-                        out_f32.mul_(results[original_i][0])
-                        # ----------------------------
+        all_bstrings = b"".join([results[i][2] for i in active_indices])
+        all_qjls = b"".join([results[i][3] for i in active_indices])
 
-                        # C library applies (sqrt(pi/2)/d) * residual_l2 scaling
-                        # But we still need to multiply by original_l2 for proper reconstruction
-                        # out_f32.mul_(results[original_i][0])  # results[original_i][0] is original_l2
-                        outputs[original_i] = out_f32.to(dtype=torch.bfloat16)
-            finally:
-                self._libc.free(ctypes.cast(c_vectors, ctypes.c_void_p))
+        massive_bstring_arr = (ctypes.c_uint8 * len(all_bstrings)).from_buffer_copy(all_bstrings)
+        massive_qjl_arr = (ctypes.c_uint8 * len(all_qjls)).from_buffer_copy(all_qjls)
+
+        base_bstring_ptr = ctypes.addressof(massive_bstring_arr)
+        base_qjl_ptr = ctypes.addressof(massive_qjl_arr)
         
+        # --- THE MASSIVE ONE-SHOT ARRAY ---
+        c_results_array = (QuantizationResult * chunk_size)()
+        
+        for chunk_i, original_i in enumerate(active_indices):
+            c_results_array[chunk_i] = QuantizationResult(
+                bstring=ctypes.cast(base_bstring_ptr + chunk_i * n_bstring, ctypes.POINTER(ctypes.c_uint8)),
+                qjl=ctypes.cast(base_qjl_ptr + chunk_i * n_qjl, ctypes.POINTER(ctypes.c_uint8)),
+                residual_l2=ctypes.c_float(float(results[original_i][1])),
+            )
+        
+        batch_input = QuantizationBatchResult(
+            results=ctypes.cast(c_results_array, ctypes.POINTER(QuantizationResult)),
+            n_results=ctypes.c_uint32(chunk_size), # <--- 32-bit cast
+        )
+        
+        # FIRE ONCE
+        c_vectors = self._lib.turboquant_prod_dequantization_batch(
+            self._batch_ctx,
+            ctypes.byref(batch_input)
+        )
+        
+        if not c_vectors:
+            raise RuntimeError("turboquant_prod_dequantization_batch returned null")
+       
+        # ONE MASSIVE PYTORCH ZERO-LOOP MEMCPY
+        first_vector_ptr = c_vectors[0].contents.vector
+        massive_out_f32 = torch.empty((chunk_size, self.block_size), dtype=torch.float32, device="cuda")
+
+        self._cuda_memcpy(
+            ctypes.c_void_p(massive_out_f32.data_ptr()),
+            ctypes.cast(first_vector_ptr, ctypes.c_void_p),
+            ctypes.c_size_t(chunk_size * self.block_size * 4),
+            ctypes.c_int(self._cuda_memcpy_device_to_device),
+        )
+
+        original_l2s_tensor = torch.tensor([results[i][0] for i in active_indices], dtype=torch.float32, device="cuda").unsqueeze(1)
+        current_norms = massive_out_f32.norm(p=2, dim=1, keepdim=True).clamp_min(1e-6)
+
+        massive_out_f32.div_(current_norms).mul_(original_l2s_tensor)
+        massive_out_bf16 = massive_out_f32.to(dtype=torch.bfloat16)
+
+        list_of_tensors = list(torch.unbind(massive_out_bf16, dim=0))
+
+        for i, original_i in enumerate(active_indices):
+            outputs[original_i] = list_of_tensors[i]
+
         return outputs
-    
+
     def close(self):
         """Cleanup batch context."""
         if self._batch_ctx and self._lib:

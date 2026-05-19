@@ -26,9 +26,9 @@ def load_env_vars():
     project_root = get_project_root()
     env_path = project_root / ".env"
     load_dotenv(env_path, override=True)
-    
+
     return {
-        "bit_width": int(os.getenv("DEFAULT_BIT_WIDTH", "3")) - 1,
+        "bit_width": float(os.getenv("DEFAULT_BIT_WIDTH", "4.0")),
         "dims": int(os.getenv("DEFAULT_DIMENSIONS", "128")),
         "n_streams": int(os.getenv("DEFAULT_BLOCK_SIZE", "8")),
         "variant": os.getenv("TURBOQUANT_VARIANT", "auto"),
@@ -511,7 +511,6 @@ def main():
     # Find library and detect variant from path
     try:
         lib_path, detected_variant = find_library(lib_path_str, variant)
-        # Use detected variant if LIB_PATH specified a specific variant
         if variant == "auto" or not lib_path_str:
             variant = detected_variant
         else:
@@ -520,10 +519,12 @@ def main():
         print(f"\nError: {e}")
         sys.exit(1)
     
+    is_mixed_precision = not bit_width.is_integer()
+
     print(f"\nConfiguration:")
     print(f"  Variant: {variant}")
-    print(f"  Bit Width: {bit_width}")
-    print(f"  Dimensions: {dims}")
+    print(f"  Target Bit Width: {bit_width} {'(Mixed Precision)' if is_mixed_precision else '(Standard)'}")
+    print(f"  Base Dimensions: {dims}")
     print(f"  Number of Streams/Threads: {n_streams}")
     print(f"  Library: {lib_path}")
     
@@ -532,29 +533,71 @@ def main():
     artifacts_dir = project_root / "artifacts"
     artifacts_dir.mkdir(exist_ok=True)
     
-    output_path = artifacts_dir / f"turboquant_ctx_{variant}_{dims}d_{bit_width + 1}b.bin"
-    
     try:
-        # Initialize context
-        print(f"\nInitializing TurboQuant context...")
-        lib, ctx, is_batch, is_simd = initialize_context(lib_path, dims, bit_width, n_streams, variant)
-        
-        print(f"  Type: {'SIMD' if is_simd else 'SIMT'} {'Batch' if is_batch else 'Single'}")
-        
-        # Save context
-        print(f"\nSaving context...")
-        save_context(lib, ctx, output_path, is_batch, is_simd)
-        update_env_context_path(output_path)
-        
-        # Cleanup
-        print(f"\nCleaning up...")
-        cleanup_context(lib, ctx, is_batch, is_simd)
-        
-        print("\n" + "=" * 60)
-        print("Initialization completed successfully!")
-        print(f"Context file: {output_path}")
-        print("=" * 60)
-        
+        if not is_mixed_precision:
+            # ==========================================
+            # STANDARD QUANTIZATION (e.g., 3.0, 4.0)
+            # ==========================================
+            int_bit_width = int(bit_width)
+            mse_bits = int_bit_width - 1
+            
+            output_path = artifacts_dir / f"turboquant_ctx_{dims}d_{int_bit_width}b.bin"
+            
+            print(f"\n[Standard Engine] Initializing {dims}D / {int_bit_width}-bit context...")
+            lib, ctx, is_batch, is_simd = initialize_context(lib_path, dims, mse_bits, n_streams, variant)
+            
+            print(f"  Type: {'SIMD' if is_simd else 'SIMT'} {'Batch' if is_batch else 'Single'}")
+            print(f"Saving context...")
+            save_context(lib, ctx, output_path, is_batch, is_simd)
+            
+            # Update the single context path in .env
+            update_env_context_path(output_path)
+            
+            print(f"Cleaning up...")
+            cleanup_context(lib, ctx, is_batch, is_simd)
+            
+            print("\n" + "=" * 60)
+            print("Standard Initialization completed successfully!")
+            print(f"Context file: {output_path}")
+            print("=" * 60)
+
+        else:
+            # ==========================================
+            # MIXED PRECISION QUANTIZATION (e.g., 3.5, 2.5)
+            # ==========================================
+            if bit_width == 3.5:
+                outlier_dims, outlier_bits = 64, 4
+                normal_dims, normal_bits = 64, 3
+            elif bit_width == 2.5:
+                outlier_dims, outlier_bits = 32, 3
+                normal_dims, normal_bits = 96, 2
+            else:
+                raise ValueError(f"Mixed precision for {bit_width} is not defined. Use 2.5 or 3.5")
+
+            outlier_mse_bits = outlier_bits - 1
+            normal_mse_bits = normal_bits - 1
+
+            outlier_ctx_path = artifacts_dir / f"turboquant_outlier_{outlier_dims}d_{outlier_bits}b.bin"
+            normal_ctx_path = artifacts_dir / f"turboquant_normal_{normal_dims}d_{normal_bits}b.bin"
+
+            print(f"\n[Mixed Engine] Generating Outlier Context ({outlier_dims}D / {outlier_bits}-bit)...")
+            lib, ctx_out, is_batch, is_simd = initialize_context(lib_path, outlier_dims, outlier_mse_bits, n_streams, variant)
+            save_context(lib, ctx_out, outlier_ctx_path, is_batch, is_simd)
+            cleanup_context(lib, ctx_out, is_batch, is_simd)
+            print(f"✅ Saved Outlier Context: {outlier_ctx_path}")
+
+            print(f"\n[Mixed Engine] Generating Normal Context ({normal_dims}D / {normal_bits}-bit)...")
+            # Reuse the loaded lib pointer, just initialize a new context
+            _, ctx_norm, _, _ = initialize_context(lib_path, normal_dims, normal_mse_bits, n_streams, variant)
+            save_context(lib, ctx_norm, normal_ctx_path, is_batch, is_simd)
+            cleanup_context(lib, ctx_norm, is_batch, is_simd)
+            print(f"✅ Saved Normal Context: {normal_ctx_path}")
+            
+            print("\n" + "=" * 60)
+            print("Mixed Precision Initialization completed successfully!")
+            print("Note: CONTEXT_PATH in .env is ignored for mixed precision.")
+            print("=" * 60)
+            
     except Exception as e:
         print(f"\nError: {e}")
         import traceback
