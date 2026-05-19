@@ -329,7 +329,7 @@ class TurboQuantLlamaGenerator(_LlamaGeneratorBase, Generator):
         self.system_prompt = self.DEFAULT_SYSTEM_PROMPT
 
         # TODO: load the model + apply TurboQuant compression here.
-        self.llama = LlamaCompressed(max_seq_length=self.max_tokens)
+        self.llama = LlamaCompressed(max_seq_length=self.max_tokens, batch_size=1, bit_width=bit_width)
         self.llama_generator = LlamaGenerator()
 
     def generate(self, query: str, context: str) -> str:
