@@ -7,7 +7,7 @@ import torch
 import json
 
 from app import (
-    CHECKPOINT_PATH, CONTEXT_PATH, DEFAULT_BIT_WIDTH,
+    PROJECT_ROOT, CHECKPOINT_PATH, CONTEXT_PATH, DEFAULT_BIT_WIDTH,
     LIB_PATH, DEFAULT_DIMENSIONS, PARAMS_PATH, 
     TOKENIZER_PATH, get_turboquant_lib_path, TURBOQUANT_VARIANT,
     get_compressor_for_variant
@@ -188,7 +188,7 @@ class LlamaCompressed(Llama):
                  batch_size : int,
                  device : str = "cuda",
                  is_batch : bool = True,
-                 bit_width : int = DEFAULT_BIT_WIDTH,
+                 bit_width : float = DEFAULT_BIT_WIDTH,
                  dims : int = DEFAULT_DIMENSIONS):
         # Setup fairscale for single-process usage
         _setup_single_process_distributed(device)
@@ -207,24 +207,86 @@ class LlamaCompressed(Llama):
         )
 
         # Use default context path if not set, looking in artifacts folder
-        context_path = CONTEXT_PATH
-        if not context_path:
-            from app import PROJECT_ROOT
-            context_path = str(PROJECT_ROOT / "artifacts" / f"turboquant_ctx_{dims}d_{bit_width + 1}b.bin")
+        # context_path = CONTEXT_PATH
+        # if not context_path:
+        #    from app import PROJECT_ROOT
+        #    context_path = str(PROJECT_ROOT / "artifacts" / f"turboquant_ctx_{dims}d_{bit_width + 1}b.bin")
 
-        # Your existing compressor init
-        self.kv_compressor = get_compressor_for_variant(
-            lib_path=str(self.lib_path),
-            context_path=context_path,
-            block_size=dims,
-            bit_width=bit_width,
-            variant=self.variant,
-        )
+        self.is_mixed_precision = isinstance(bit_width, float) and not bit_width.is_integer()
+
+        if self.is_mixed_precision:
+            # 1. Calculate Split Logic based on the TurboQuant Paper
+            if bit_width == 3.5:
+                # (64 channels * 4 bits) + (64 channels * 3 bits) / 128 = 3.5
+                self.outlier_dims = 64
+                outlier_total_bits = 4
+
+                self.normal_dims = dims - self.outlier_dims
+                normal_total_bits = 3
+
+            elif bit_width == 2.5:
+                # (32 channels * 3 bits) + (96 channels * 2 bits) / 128 = 2.5
+                self.outlier_dims = 32
+                outlier_total_bits = 3
+
+                self.normal_dims = dims - self.outlier_dims
+                normal_total_bits = 2
+
+            else:
+                raise ValueError(f"Mixed precision for {bit_width} bits is not defined. Use 2.5 or 3.5.")
+
+            # 2. Subtract 1 for the MSE bit budgets
+            outlier_mse_bits = outlier_total_bits - 1
+            normal_mse_bits = normal_total_bits - 1
+
+            # 3. Dynamically generate context paths so they don't overwrite each other
+            outlier_ctx_path = str(PROJECT_ROOT / "artifacts" / f"turboquant_outlier_{self.outlier_dims}d_{outlier_total_bits}b.bin")
+            normal_ctx_path = str(PROJECT_ROOT / "artifacts" / f"turboquant_normal_{self.normal_dims}d_{normal_total_bits}b.bin")
+
+            # 4. Initialize both compressors
+            self.outlier_compressor = get_compressor_for_variant(
+                lib_path=str(self.lib_path),
+                context_path=outlier_ctx_path,
+                block_size=self.outlier_dims,
+                bit_width=outlier_mse_bits,
+                variant=self.variant,
+            )
+
+            self.normal_compressor = get_compressor_for_variant(
+                lib_path=str(self.lib_path),
+                context_path=normal_ctx_path,
+                block_size=self.normal_dims,
+                bit_width=normal_mse_bits,
+                variant=self.variant,
+            )
+            self.kv_compressor = None # Nullify the standard compressor
+
+        else:
+            int_bit_width = int(bit_width)
+            mse_bits = int_bit_width - 1
+
+            context_path = str(PROJECT_ROOT / "artifacts" / f"turboquant_ctx_{dims}d_{int_bit_width}b.bin")
+
+            self.kv_compressor = get_compressor_for_variant(
+                lib_path=str(self.lib_path),
+                context_path=context_path,
+                block_size=dims,
+                bit_width=mse_bits,
+                variant=self.variant,
+            )
+            self.outlier_compressor = None
+            self.normal_compressor = None
+
 
         # --- THE FIX: Meta-Device Initialization ---
         # 1. Build model architecture on the META device (Takes 0 GB VRAM)
         with torch.device("meta"):
-            self.model = Transformer(self.model_args, self.kv_compressor)
+            self.model = Transformer(
+                self.model_args,
+                self.kv_compressor,
+                self.outlier_compressor,
+                self.normal_compressor
+            )
 
         self.model.load_state_dict(self.checkpoints, strict=False, assign=True)
 
@@ -235,7 +297,7 @@ class LlamaCompressed(Llama):
             for name, buf in m.named_buffers(recurse=False):
                 if buf is not None and buf.device.type == "meta":
                     m.register_buffer(name, torch.zeros(buf.shape, dtype=buf.dtype, device=device))
-            
+
             # Catch loose attributes attached to the module
             for name, attr in vars(m).items():
                 if isinstance(attr, torch.Tensor) and attr.device.type == "meta":
@@ -243,17 +305,37 @@ class LlamaCompressed(Llama):
 
 
         # 2. Safe sweep for the custom KV Compressor (Catching lists/dicts)
-        if hasattr(self, 'kv_compressor') and self.kv_compressor is not None:
-            for name, attr in vars(self.kv_compressor).items():
-                # Direct tensors
+        # if hasattr(self, 'kv_compressor') and self.kv_compressor is not None:
+        #    for name, attr in vars(self.kv_compressor).items():
+        #        # Direct tensors
+        #        if isinstance(attr, torch.Tensor) and attr.device.type == "meta":
+        #            setattr(self.kv_compressor, name, torch.zeros(attr.shape, dtype=attr.dtype, device=device))
+        #        # Tensors hidden inside a list
+        #        elif isinstance(attr, list):
+        #            for i, v in enumerate(attr):
+        #                if isinstance(v, torch.Tensor) and v.device.type == "meta":
+        #                    attr[i] = torch.zeros(v.shape, dtype=v.dtype, device=device)
+        #        # Tensors hidden inside a dictionary
+        #        elif isinstance(attr, dict):
+        #            for k, v in attr.items():
+        #                if isinstance(v, torch.Tensor) and v.device.type == "meta":
+        #                    attr[k] = torch.zeros(v.shape, dtype=v.dtype, device=device)
+
+        # 2. Safe sweep for the custom KV Compressors (Catching lists/dicts)
+        compressors_to_sweep = []
+        if self.is_mixed_precision:
+            compressors_to_sweep = [self.outlier_compressor, self.normal_compressor]
+        elif self.kv_compressor is not None:
+            compressors_to_sweep = [self.kv_compressor]
+
+        for compressor in compressors_to_sweep:
+            for name, attr in vars(compressor).items():
                 if isinstance(attr, torch.Tensor) and attr.device.type == "meta":
-                    setattr(self.kv_compressor, name, torch.zeros(attr.shape, dtype=attr.dtype, device=device))
-                # Tensors hidden inside a list
+                    setattr(compressor, name, torch.zeros(attr.shape, dtype=attr.dtype, device=device))
                 elif isinstance(attr, list):
                     for i, v in enumerate(attr):
                         if isinstance(v, torch.Tensor) and v.device.type == "meta":
                             attr[i] = torch.zeros(v.shape, dtype=v.dtype, device=device)
-                # Tensors hidden inside a dictionary
                 elif isinstance(attr, dict):
                     for k, v in attr.items():
                         if isinstance(v, torch.Tensor) and v.device.type == "meta":

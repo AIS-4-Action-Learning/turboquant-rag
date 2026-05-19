@@ -9,6 +9,7 @@
 # This software may be used and distributed in accordance with the terms of the Llama 3 Community License Agreement.
 
 import math
+from re import I
 from typing import Any, List, Optional, Tuple
 
 import fairscale.nn.model_parallel.initialize as fs_init
@@ -19,7 +20,7 @@ from fairscale.nn.model_parallel.layers import (
     RowParallelLinear,
     VocabParallelEmbedding,
 )
-from torch import nn
+from torch import nn, normal
 
 from .args import ModelArgs
 
@@ -113,6 +114,8 @@ class Attention(nn.Module):
         self,
         args: ModelArgs,
         kv_cache_compressor: Optional[Any] = None,
+        outlier_compressor: Optional[Any] = None,
+        normal_compressor: Optional[Any] = None
     ):
         super().__init__()
         self.n_kv_heads = args.n_heads if args.n_kv_heads is None else args.n_kv_heads
@@ -152,6 +155,10 @@ class Attention(nn.Module):
         )
         self.use_compressed_kv_cache = args.use_compressed_kv_cache
         self.kv_cache_compressor: Optional[Any] = kv_cache_compressor
+        self.outlier_compressor: Optional[Any] = outlier_compressor
+        self.normal_compressor: Optional[Any] = normal_compressor
+
+        self.is_mixed_precision = outlier_compressor is not None and normal_compressor is not None
 
         self.kv_cache_block_size = 0
         self.kv_cache_bit_width = 0
@@ -171,78 +178,38 @@ class Attention(nn.Module):
         self.cache_v_residual_l2 = None
 
         if self.use_compressed_kv_cache:
-            if self.kv_cache_compressor is None:
-                raise ValueError(
-                    "use_compressed_kv_cache=True requires an externally created TurboQuant compressor"
-                )
+            if self.is_mixed_precision:
+                self.outlier_dim = self.outlier_compressor.block_size
+                self.normal_dim = self.normal_compressor.block_size
 
-            required_attrs = ("compress_chunk", "decompress_chunk", "block_size", "bit_width")
-            for attr in required_attrs:
-                if not hasattr(self.kv_cache_compressor, attr):
-                    raise TypeError(
-                        f"kv_cache_compressor must provide '{attr}' (expected app.turboquant compressor)"
-                    )
+                # Outlier Channels Allocation
+                self.cache_k_bstring_outlier, self.cache_k_qjl_outlier, self.cache_k_orig_outlier, self.cache_k_res_outlier = self._allocate_cache(self.outlier_compressor, args)
+                self.cache_v_bstring_outlier, self.cache_v_qjl_outlier, self.cache_v_orig_outlier, self.cache_v_res_outlier = self._allocate_cache(self.outlier_compressor, args)
 
-            self.kv_cache_block_size = int(self.kv_cache_compressor.block_size)
-            self.kv_cache_bit_width = int(self.kv_cache_compressor.bit_width)
-            if self.kv_cache_block_size <= 0:
-                raise ValueError("kv_cache_compressor.block_size must be > 0")
-            if self.kv_cache_bit_width <= 0:
-                raise ValueError("kv_cache_compressor.bit_width must be > 0")
-
-            self.kv_cache_n_blocks = (
-                self.head_dim + self.kv_cache_block_size - 1
-            ) // self.kv_cache_block_size
-            self.kv_cache_bstring_bytes = (
-                self.kv_cache_bit_width * self.kv_cache_block_size + 7
-            ) // 8
-            self.kv_cache_qjl_bytes = (self.kv_cache_block_size + 7) // 8
-
-            compressed_shape = (
-                args.max_batch_size,
-                args.max_seq_len,
-                self.n_local_kv_heads,
-                self.kv_cache_n_blocks,
-            )
-
-            self.cache_k_bstring = torch.zeros(
-                (*compressed_shape, self.kv_cache_bstring_bytes), dtype=torch.uint8
-            )
-            self.cache_k_qjl = torch.zeros(
-                (*compressed_shape, self.kv_cache_qjl_bytes), dtype=torch.uint8
-            )
-            self.cache_k_original_l2 = torch.zeros(compressed_shape, dtype=torch.float32)
-            self.cache_k_residual_l2 = torch.zeros(compressed_shape, dtype=torch.float32)
-
-            self.cache_v_bstring = torch.zeros(
-                (*compressed_shape, self.kv_cache_bstring_bytes), dtype=torch.uint8
-            )
-            self.cache_v_qjl = torch.zeros(
-                (*compressed_shape, self.kv_cache_qjl_bytes), dtype=torch.uint8
-            )
-            self.cache_v_original_l2 = torch.zeros(compressed_shape, dtype=torch.float32)
-            self.cache_v_residual_l2 = torch.zeros(compressed_shape, dtype=torch.float32)
+                # Normal Channels Allocation
+                self.cache_k_bstring_normal, self.cache_k_qjl_normal, self.cache_k_orig_normal, self.cache_k_res_normal = self._allocate_cache(self.normal_compressor, args)
+                self.cache_v_bstring_normal, self.cache_v_qjl_normal, self.cache_v_orig_normal, self.cache_v_res_normal = self._allocate_cache(self.normal_compressor, args)
+            else:
+                # Standard Unified Allocation
+                self.cache_k_bstring, self.cache_k_qjl, self.cache_k_orig, self.cache_k_res = self._allocate_cache(self.kv_cache_compressor, args)
+                self.cache_v_bstring, self.cache_v_qjl, self.cache_v_orig, self.cache_v_res = self._allocate_cache(self.kv_cache_compressor, args)
         else:
-            self.cache_k = torch.zeros(
-                (
-                    args.max_batch_size,
-                    args.max_seq_len,
-                    self.n_local_kv_heads,
-                    self.head_dim,
-                )
-            )
-            self.cache_v = torch.zeros(
-                (
-                    args.max_batch_size,
-                    args.max_seq_len,
-                    self.n_local_kv_heads,
-                    self.head_dim,
-                )
-            )
+            self.cache_k = torch.zeros((args.max_batch_size, args.max_seq_len, self.n_local_kv_heads, self.head_dim))
+            self.cache_v = torch.zeros((args.max_batch_size, args.max_seq_len, self.n_local_kv_heads, self.head_dim))
 
-    def _flatten_for_compression(self, tensor: torch.Tensor) -> List[torch.Tensor]:
-        flat_blocks = tensor.view(-1, self.kv_cache_block_size)
-        return list(torch.unbind(flat_blocks, dim=0))
+    def _allocate_cache(self, compressor, args):
+        """Helper to cleanly build the massive tensors based on the dynamic budget"""
+        b_bytes = (int(compressor.bit_width) * int(compressor.block_size) + 7) // 8
+        q_bytes = (int(compressor.block_size) + 7) // 8
+        shape = (args.max_batch_size, args.max_seq_len, self.n_local_kv_heads, 1) # n_blocks is 1 since slice matches block_size
+
+        return (
+            torch.zeros((*shape, b_bytes), dtype=torch.uint8),
+            torch.zeros((*shape, q_bytes), dtype=torch.uint8),
+            torch.zeros(shape, dtype=torch.float32),
+            torch.zeros(shape, dtype=torch.float32)
+        )
+
 
     def _store_compressed_cache(
         self,
@@ -250,72 +217,79 @@ class Attention(nn.Module):
         bsz: int,
         seqlen: int,
         start_pos: int,
-        cache_bstring: torch.Tensor,
-        cache_qjl: torch.Tensor,
-        cache_original_l2: torch.Tensor,
-        cache_residual_l2: torch.Tensor,
-        label: str = "",
+        compressor,
+        c_bstring: torch.Tensor,
+        c_qjl: torch.Tensor,
+        c_orig: torch.Tensor,
+        c_res: torch.Tensor,
     ) -> None:
         """Vectorized storage: Uses bulk conversion to avoid Python loops."""
         tensor = tensor.float().contiguous()
 
-        blocks = self._flatten_for_compression(tensor)
-        compressed_results = self.kv_cache_compressor.compress_chunk(blocks)
+        # Flatten input tensor for compression
+        blocks = list(torch.unbind(tensor.view(-1, compressor.block_size), dim=0))
 
-        # --- ASYNC MEMORY BARRIER ---
+        compressed_results = compressor.compress_chunk(blocks)
+
         # Prevent Python's Garbage Collector from destroying tensor_f32
         # before the asynchronous CUDA kernel finishes reading it!
         if tensor.device.type == "cuda":
             torch.cuda.synchronize()
-        # ------------------------------
 
         # Bulk convert bytes into flat buffers using list comprehensions (faster than loops)
         all_bstrings = b"".join([res[2] for res in compressed_results])
         all_qjls = b"".join([res[3] for res in compressed_results])
 
+        b_bytes = (int(compressor.bit_width) * int(compressor.block_size) + 7) // 8
+        q_bytes = (int(compressor.block_size) + 7) // 8
+
         # Convert to tensors and reshape to match the cache structure
         # Shape: (bsz, seqlen, heads, n_blocks, ...)
         b_tensor = torch.frombuffer(all_bstrings, dtype=torch.uint8).view(
-            bsz, seqlen, self.n_local_kv_heads, self.kv_cache_n_blocks, -1
+            bsz, seqlen, self.n_local_kv_heads, 1, b_bytes
         )
         q_tensor = torch.frombuffer(all_qjls, dtype=torch.uint8).view(
-            bsz, seqlen, self.n_local_kv_heads, self.kv_cache_n_blocks, -1
+            bsz, seqlen, self.n_local_kv_heads, 1, q_bytes
         )
 
         # Original and Residual L2s
         orig_l2 = torch.tensor([res[0] for res in compressed_results], dtype=torch.float32).view(
-            bsz, seqlen, self.n_local_kv_heads, self.kv_cache_n_blocks
+            bsz, seqlen, self.n_local_kv_heads, 1
         )
         res_l2 = torch.tensor([res[1] for res in compressed_results], dtype=torch.float32).view(
-            bsz, seqlen, self.n_local_kv_heads, self.kv_cache_n_blocks
+            bsz, seqlen, self.n_local_kv_heads, 1
         )
 
         # Batch assignment to the cache slices
         end_pos = start_pos + seqlen
-        cache_bstring[:bsz, start_pos:end_pos] = b_tensor.to(cache_bstring.device)
-        cache_qjl[:bsz, start_pos:end_pos] = q_tensor.to(cache_qjl.device)
-        cache_original_l2[:bsz, start_pos:end_pos] = orig_l2.to(cache_original_l2.device)
-        cache_residual_l2[:bsz, start_pos:end_pos] = res_l2.to(cache_residual_l2.device)
+        c_bstring[:bsz, start_pos:end_pos] = b_tensor.to(c_bstring.device)
+        c_qjl[:bsz, start_pos:end_pos] = q_tensor.to(c_qjl.device)
+        c_orig[:bsz, start_pos:end_pos] = orig_l2.to(c_orig.device)
+        c_res[:bsz, start_pos:end_pos] = res_l2.to(c_res.device)
 
     def _fetch_decompressed_cache(
         self,
         bsz: int,
         cache_len: int,
-        cache_bstring: torch.Tensor,
-        cache_qjl: torch.Tensor,
-        cache_original_l2: torch.Tensor,
-        cache_residual_l2: torch.Tensor,
+        compressor: Any,
+        c_bstring: torch.Tensor,
+        c_qjl: torch.Tensor,
+        c_orig: torch.Tensor,
+        c_res: torch.Tensor,
         target_device: torch.device,
         target_dtype: torch.dtype,
     ) -> torch.Tensor:
         """Vectorized fetching: Converts cache slices to C-input in bulk."""
         # 1. Slice and flatten everything to CPU
-        o_flat = cache_original_l2[:bsz, :cache_len].reshape(-1).cpu().tolist()
-        r_flat = cache_residual_l2[:bsz, :cache_len].reshape(-1).cpu().tolist()
+        o_flat = c_orig[:bsz, :cache_len].reshape(-1).cpu().tolist()
+        r_flat = c_res[:bsz, :cache_len].reshape(-1).cpu().tolist()
+
+        b_bytes = (int(compressor.bit_width) * int(compressor.block_size) + 7) // 8
+        q_bytes = (int(compressor.block_size) + 7) // 8
 
         # Reshape bitstrings to (N, BytesPerBlock) before calling .numpy()
-        b_flat = cache_bstring[:bsz, :cache_len].contiguous().reshape(-1, self.kv_cache_bstring_bytes).cpu().numpy()
-        q_flat = cache_qjl[:bsz, :cache_len].contiguous().reshape(-1, self.kv_cache_qjl_bytes).cpu().numpy()
+        b_flat = c_bstring[:bsz, :cache_len].contiguous().reshape(-1, b_bytes).cpu().numpy()
+        q_flat = c_qjl[:bsz, :cache_len].contiguous().reshape(-1, q_bytes).cpu().numpy()
 
         # 2. Reconstruct the list of tuples for the decompressor
         compressed_blocks = [
@@ -324,12 +298,12 @@ class Attention(nn.Module):
         ]
 
         # 3. Batch Decompress (The C-API Multi-threaded call)
-        decompressed_blocks = self.kv_cache_compressor.decompress_chunk(compressed_blocks)
+        decompressed_blocks = compressor.decompress_chunk(compressed_blocks)
 
         # 4. Stack and view back to (B, S, H, D)
         stacked = torch.stack(decompressed_blocks, dim=0).to(device=target_device, dtype=target_dtype)
 
-        return stacked.view(bsz, cache_len, self.n_local_kv_heads, self.head_dim)
+        return stacked.view(bsz, cache_len, self.n_local_kv_heads, compressor.block_size)
 
     def forward(
         self,
@@ -346,51 +320,38 @@ class Attention(nn.Module):
         xq, xk = apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
 
         if self.use_compressed_kv_cache:
-            self._store_compressed_cache(
-                xk,
-                bsz=bsz,
-                seqlen=seqlen,
-                start_pos=start_pos,
-                cache_bstring=self.cache_k_bstring,
-                cache_qjl=self.cache_k_qjl,
-                cache_original_l2=self.cache_k_original_l2,
-                cache_residual_l2=self.cache_k_residual_l2,
-                label="K",
-            )
-            self._store_compressed_cache(
-                xv,
-                bsz=bsz,
-                seqlen=seqlen,
-                start_pos=start_pos,
-                cache_bstring=self.cache_v_bstring,
-                cache_qjl=self.cache_v_qjl,
-                cache_original_l2=self.cache_v_original_l2,
-                cache_residual_l2=self.cache_v_residual_l2,
-                label="V",
-            )
-
             cache_len = start_pos + seqlen
 
-            keys = self._fetch_decompressed_cache(
-                bsz=bsz,
-                cache_len=cache_len,
-                cache_bstring=self.cache_k_bstring,
-                cache_qjl=self.cache_k_qjl,
-                cache_original_l2=self.cache_k_original_l2,
-                cache_residual_l2=self.cache_k_residual_l2,
-                target_device=xq.device,
-                target_dtype=xq.dtype,
-            )
-            values = self._fetch_decompressed_cache(
-                bsz=bsz,
-                cache_len=cache_len,
-                cache_bstring=self.cache_v_bstring,
-                cache_qjl=self.cache_v_qjl,
-                cache_original_l2=self.cache_v_original_l2,
-                cache_residual_l2=self.cache_v_residual_l2,
-                target_device=xq.device,
-                target_dtype=xq.dtype,
-            )
+            if self.is_mixed_precision:
+                # 1. Split Keys and Values by dimensions
+                xk_out = xk[..., :self.outlier_dim]
+                xk_norm = xk[..., self.outlier_dim:]
+                xv_out = xv[..., :self.outlier_dim]
+                xv_norm = xv[..., self.outlier_dim:]
+
+                # 2. Store independently
+                self._store_compressed_cache(xk_out, bsz, seqlen, start_pos, self.outlier_compressor, self.cache_k_bstring_outlier, self.cache_k_qjl_outlier, self.cache_k_orig_outlier, self.cache_k_res_outlier)
+                self._store_compressed_cache(xk_norm, bsz, seqlen, start_pos, self.normal_compressor, self.cache_k_bstring_normal, self.cache_k_qjl_normal, self.cache_k_orig_normal, self.cache_k_res_normal)
+                self._store_compressed_cache(xv_out, bsz, seqlen, start_pos, self.outlier_compressor, self.cache_v_bstring_outlier, self.cache_v_qjl_outlier, self.cache_v_orig_outlier, self.cache_v_res_outlier)
+                self._store_compressed_cache(xv_norm, bsz, seqlen, start_pos, self.normal_compressor, self.cache_v_bstring_normal, self.cache_v_qjl_normal, self.cache_v_orig_normal, self.cache_v_res_normal)
+
+                # 3. Fetch independently
+                k_out = self._fetch_decompressed_cache(bsz, cache_len, self.outlier_compressor, self.cache_k_bstring_outlier, self.cache_k_qjl_outlier, self.cache_k_orig_outlier, self.cache_k_res_outlier, xq.device, xq.dtype)
+                k_norm = self._fetch_decompressed_cache(bsz, cache_len, self.normal_compressor, self.cache_k_bstring_normal, self.cache_k_qjl_normal, self.cache_k_orig_normal, self.cache_k_res_normal, xq.device, xq.dtype)
+                v_out = self._fetch_decompressed_cache(bsz, cache_len, self.outlier_compressor, self.cache_v_bstring_outlier, self.cache_v_qjl_outlier, self.cache_v_orig_outlier, self.cache_v_res_outlier, xq.device, xq.dtype)
+                v_norm = self._fetch_decompressed_cache(bsz, cache_len, self.normal_compressor, self.cache_v_bstring_normal, self.cache_v_qjl_normal, self.cache_v_orig_normal, self.cache_v_res_normal, xq.device, xq.dtype)
+
+                # 4. Concatenate back to 128-dim head
+                keys = torch.cat([k_out, k_norm], dim=-1)
+                values = torch.cat([v_out, v_norm], dim=-1)
+
+            else:
+                self._store_compressed_cache(xk, bsz, seqlen, start_pos, self.kv_cache_compressor, self.cache_k_bstring, self.cache_k_qjl, self.cache_k_orig, self.cache_k_res)
+                self._store_compressed_cache(xv, bsz, seqlen, start_pos, self.kv_cache_compressor, self.cache_v_bstring, self.cache_v_qjl, self.cache_v_orig, self.cache_v_res)
+
+                keys = self._fetch_decompressed_cache(bsz, cache_len, self.kv_cache_compressor, self.cache_k_bstring, self.cache_k_qjl, self.cache_k_orig, self.cache_k_res, xq.device, xq.dtype)
+                values = self._fetch_decompressed_cache(bsz, cache_len, self.kv_cache_compressor, self.cache_v_bstring, self.cache_v_qjl, self.cache_v_orig, self.cache_v_res, xq.device, xq.dtype)
+
         else:
             self.cache_k = self.cache_k.to(xq)
             self.cache_v = self.cache_v.to(xq)
@@ -446,12 +407,19 @@ class TransformerBlock(nn.Module):
         layer_id: int,
         args: ModelArgs,
         kv_cache_compressor: Optional[Any] = None,
+        outlier_compressor: Optional[Any] = None,
+        normal_compressor: Optional[Any] = None
     ):
         super().__init__()
         self.n_heads = args.n_heads
         self.dim = args.dim
         self.head_dim = args.dim // args.n_heads
-        self.attention = Attention(args, kv_cache_compressor=kv_cache_compressor)
+        self.attention = Attention(args,
+                                   kv_cache_compressor=kv_cache_compressor,
+                                   outlier_compressor=outlier_compressor,
+                                   normal_compressor=normal_compressor
+                                   )
+
         self.feed_forward = FeedForward(
             dim=args.dim,
             hidden_dim=4 * args.dim,
@@ -479,6 +447,8 @@ class Transformer(nn.Module):
         self,
         params: ModelArgs,
         kv_cache_compressor: Optional[Any] = None,
+        outlier_compressor: Optional[Any] = None,
+        normal_compressor: Optional[Any] = None
     ):
         super().__init__()
         self.params = params
@@ -494,6 +464,8 @@ class Transformer(nn.Module):
                     layer_id,
                     params,
                     kv_cache_compressor=kv_cache_compressor,
+                    outlier_compressor=outlier_compressor,
+                    normal_compressor=normal_compressor
                 )
             )
 
@@ -556,5 +528,5 @@ class Transformer(nn.Module):
         out_device = self.output.weight.device
         h_out = h.to(out_device)
         output = self.output(h_out).float()
-        
+
         return output.to(original_token_device)
