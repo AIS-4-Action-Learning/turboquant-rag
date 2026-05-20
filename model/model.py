@@ -158,8 +158,6 @@ class Attention(nn.Module):
         self.outlier_compressor: Optional[Any] = outlier_compressor
         self.normal_compressor: Optional[Any] = normal_compressor
 
-        self.bypass_kv_cache = False
-
         self.is_mixed_precision = outlier_compressor is not None and normal_compressor is not None
 
         self.kv_cache_block_size = 0
@@ -321,11 +319,7 @@ class Attention(nn.Module):
         xv = xv.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
         xq, xk = apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
 
-        # --- NEW: Bypass KV Cache entirely during embedding ---
-        if self.bypass_kv_cache:
-            keys = xk
-            values = xv
-        elif self.use_compressed_kv_cache:
+        if self.use_compressed_kv_cache:
             cache_len = start_pos + seqlen
 
             if self.is_mixed_precision:
@@ -542,10 +536,8 @@ class Transformer(nn.Module):
         bsz, seqlen = tokens.shape
         original_token_device = tokens.device
 
-
-        # Explicitly tell Attention layers to bypass the KV Cache
-        for layer in self.layers:
-            layer.attention.bypass_kv_cache = True # type: ignore
+        original_state = self.params.use_compressed_kv_cache
+        self.params.use_compressed_kv_cache = False
 
         try:
             # 1. EMBEDDING PHASE (Dynamic)
@@ -585,6 +577,4 @@ class Transformer(nn.Module):
             print(f"[get_embeddings] error: {e}")
             return torch.zeros((bsz, self.params.dim), dtype=torch.float32, device=original_token_device)
         finally:
-            # Explicitly tell Attention layers to bypass the KV Cache
-            for layer in self.layers:
-                layer.attention.bypass_kv_cache = True # type: ignore
+            self.params.use_compressed_kv_cache = original_state
