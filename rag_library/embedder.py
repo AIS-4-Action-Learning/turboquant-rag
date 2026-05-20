@@ -15,7 +15,8 @@ Class hierarchy:
 import time
 from abc import ABC, abstractmethod
 from typing import List
-from app.llama_models import LlamaEmbedder, LlamaBF16
+from app.llama_models import Llama, LlamaEmbedder, LlamaBF16
+import torch
 
 # ---------------------------------------------------------------------------
 # Public abstract base class
@@ -197,7 +198,7 @@ class _LlamaEmbedderBase:
 # Llama BF16 (baseline) — STUB, to be implemented
 # ---------------------------------------------------------------------------
 
-class BF16LlamaEmbedder(_LlamaEmbedderBase, Embedder):
+class Llama3Embedder(_LlamaEmbedderBase, Embedder):
     """Embedder using BF16 (uncompressed) Llama 3.1 8B.
 
     BASELINE for our research benchmarks. Llama 3.1 is used as both
@@ -226,47 +227,18 @@ class BF16LlamaEmbedder(_LlamaEmbedderBase, Embedder):
         self.pooling = pooling
 
         # TODO: load the model here once framework is decided.
+        self.model = LlamaBF16(1024, 1)
+        self.llama_embedder = LlamaEmbedder()
 
     def embed(self, texts: List[str]) -> List[List[float]]:
-
-
-# ---------------------------------------------------------------------------
-# Llama TurboQuant (compressed) — STUB, to be implemented
-# ---------------------------------------------------------------------------
-
-class TurboQuantLlamaEmbedder(_LlamaEmbedderBase, Embedder):
-    """Embedder using TurboQuant-compressed Llama 3.1 8B.
-
-    EXPERIMENTAL configuration. Same Llama as BF16LlamaEmbedder but with
-    TurboQuant compression applied. Used to evaluate whether compression
-    affects the quality of retrieval embeddings, not just generation.
-
-    STATUS: stub. Awaiting TurboQuant kernel integration.
-    """
-
-    def __init__(
-        self,
-        model_path: str,
-        bit_width: int = 3,
-        batch_size: int = _LlamaEmbedderBase.DEFAULT_BATCH_SIZE,
-        pooling: str = _LlamaEmbedderBase.DEFAULT_POOLING,
-    ):
-        """
-        Args:
-            model_path: Path or HF identifier for Llama 3.1 8B.
-            bit_width: TurboQuant compression bit-width (2, 3, or 4).
-            batch_size: Number of texts per forward pass.
-            pooling: How to pool hidden states into a single vector.
-        """
-        self.model_path = model_path
-        self.bit_width = bit_width
-        self.batch_size = batch_size
-        self.pooling = pooling
-
-        # TODO: load model + apply TurboQuant compression once available.
-
-    def embed(self, texts: List[str]) -> List[List[float]]:
-        raise NotImplementedError(
-            "TurboQuantLlamaEmbedder.embed not yet implemented. "
-            "Awaiting the TurboQuant kernel integration."
-        )
+        try:
+            tensors = [self.model.input_encoding(t) for t in texts]
+            return [
+                self.llama_embedder.embed_token_tensor(
+                    self.model,
+                    tensor[1]
+                ).cpu().tolist() for tensor in tensors
+            ]
+        except Exception as e:
+            print(e)
+            return [[]]
