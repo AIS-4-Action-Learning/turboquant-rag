@@ -194,8 +194,8 @@ class Attention(nn.Module):
                 self.cache_k_bstring, self.cache_k_qjl, self.cache_k_orig, self.cache_k_res = self._allocate_cache(self.kv_cache_compressor, args)
                 self.cache_v_bstring, self.cache_v_qjl, self.cache_v_orig, self.cache_v_res = self._allocate_cache(self.kv_cache_compressor, args)
         else:
-            self.cache_k = torch.empty((args.max_batch_size, args.max_seq_len, self.n_local_kv_heads, self.head_dim), device="meta")
-            self.cache_v = torch.empty((args.max_batch_size, args.max_seq_len, self.n_local_kv_heads, self.head_dim), device="meta")
+            self.cache_k = torch.zeros((args.max_batch_size, args.max_seq_len, self.n_local_kv_heads, self.head_dim))
+            self.cache_v = torch.zeros((args.max_batch_size, args.max_seq_len, self.n_local_kv_heads, self.head_dim))
 
     def _allocate_cache(self, compressor, args):
         """Helper to cleanly build the massive tensors based on the dynamic budget"""
@@ -204,10 +204,10 @@ class Attention(nn.Module):
         shape = (args.max_batch_size, args.max_seq_len, self.n_local_kv_heads, 1) # n_blocks is 1 since slice matches block_size
 
         return (
-            torch.empty((*shape, b_bytes), dtype=torch.uint8, device="meta"),
-            torch.empty((*shape, q_bytes), dtype=torch.uint8, device="meta"),
-            torch.empty(shape, dtype=torch.float32, device="meta"),
-            torch.empty(shape, dtype=torch.float32, device="meta")
+            torch.zeros((*shape, b_bytes), dtype=torch.uint8),
+            torch.zeros((*shape, q_bytes), dtype=torch.uint8),
+            torch.zeros(shape, dtype=torch.float32),
+            torch.zeros(shape, dtype=torch.float32)
         )
 
 
