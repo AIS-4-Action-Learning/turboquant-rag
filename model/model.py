@@ -159,6 +159,7 @@ class Attention(nn.Module):
         self.normal_compressor: Optional[Any] = normal_compressor
 
         self.is_mixed_precision = outlier_compressor is not None and normal_compressor is not None
+        self.bypass_kv_cache = False
 
         self.kv_cache_block_size = 0
         self.kv_cache_bit_width = 0
@@ -245,10 +246,10 @@ class Attention(nn.Module):
 
         # Convert to tensors and reshape to match the cache structure
         # Shape: (bsz, seqlen, heads, n_blocks, ...)
-        b_tensor = torch.frombuffer(all_bstrings, dtype=torch.uint8).view(
+        b_tensor = torch.frombuffer(bytearray(all_bstrings), dtype=torch.uint8).view(
             bsz, seqlen, self.n_local_kv_heads, 1, b_bytes
         )
-        q_tensor = torch.frombuffer(all_qjls, dtype=torch.uint8).view(
+        q_tensor = torch.frombuffer(bytearray(all_qjls), dtype=torch.uint8).view(
             bsz, seqlen, self.n_local_kv_heads, 1, q_bytes
         )
 
@@ -319,7 +320,10 @@ class Attention(nn.Module):
         xv = xv.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
         xq, xk = apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
 
-        if self.use_compressed_kv_cache:
+        if getattr(self, "bypass_kv_cache", False):
+            keys = xk
+            values = xv
+        elif self.use_compressed_kv_cache:
             cache_len = start_pos + seqlen
 
             if self.is_mixed_precision:
@@ -539,6 +543,10 @@ class Transformer(nn.Module):
         original_state = self.params.use_compressed_kv_cache
         self.params.use_compressed_kv_cache = False
 
+        # Use setattr to dynamically bypass Pyright's ModuleList type checking
+        for layer in self.layers:
+            setattr(layer.attention, "bypass_kv_cache", True)
+
         try:
             # 1. EMBEDDING PHASE (Dynamic)
             embed_device = self.tok_embeddings.weight.device
@@ -577,4 +585,7 @@ class Transformer(nn.Module):
             print(f"[get_embeddings] error: {e}")
             return torch.zeros((bsz, self.params.dim), dtype=torch.float32, device=original_token_device)
         finally:
+            # Safely restore the state for the Generator
+            for layer in self.layers:
+                setattr(layer.attention, "bypass_kv_cache", False)
             self.params.use_compressed_kv_cache = original_state

@@ -184,7 +184,7 @@ class Llama3Embedder(Embedder):
     def __init__(
         self,
         model: LlamaBF16 | LlamaCompressed,
-        batch_size: int = 8,
+        batch_size: int = 1,
     ):
         self.model = model
         self.batch_size = batch_size
