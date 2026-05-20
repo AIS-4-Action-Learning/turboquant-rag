@@ -162,10 +162,9 @@ class LlamaBF16(Llama):
             # Move the 32 Transformer blocks to CUDA
             for i, layer in enumerate(self.model.layers):
                 self.model.layers[i] = layer.to(device="cuda", dtype=torch.bfloat16)
-
-            # FIX 2: Added safety check
-            if device == "cuda":
-                torch.cuda.empty_cache()
+                # FIX 2: Added safety check
+                if device == "cuda":
+                    torch.cuda.empty_cache()
 
             # FIX 3: Replaced "cuda" with dynamic device variable
             self.model.norm = self.model.norm.to(device=device, dtype=torch.bfloat16)
@@ -291,6 +290,18 @@ class LlamaCompressed(Llama):
 
         self.model.load_state_dict(self.checkpoints, strict=False, assign=True)
 
+        # --- THE FLAWLESS GHOST CACHE MATERIALIZER ---
+        # 1. Native PyTorch sweep for the model tree
+        for m in self.model.modules():
+            # Catch registered PyTorch buffers (like cache_k, cache_v)
+            for name, buf in m.named_buffers(recurse=False):
+                if buf is not None and buf.device.type == "meta":
+                    m.register_buffer(name, torch.zeros(buf.shape, dtype=buf.dtype, device=device))
+
+            # Catch loose attributes attached to the module
+            for name, attr in vars(m).items():
+                if isinstance(attr, torch.Tensor) and attr.device.type == "meta":
+                    setattr(m, name, torch.zeros(tuple(attr.shape), dtype=attr.dtype, device=device))
 
 
         # 2. Safe sweep for the custom KV Compressor (Catching lists/dicts)
@@ -309,19 +320,6 @@ class LlamaCompressed(Llama):
         #            for k, v in attr.items():
         #                if isinstance(v, torch.Tensor) and v.device.type == "meta":
         #                    attr[k] = torch.zeros(v.shape, dtype=v.dtype, device=device)
-
-        # --- THE FLAWLESS GHOST CACHE MATERIALIZER ---
-        # 1. Native PyTorch sweep for the model tree
-        for m in self.model.modules():
-            # Catch registered PyTorch buffers (like cache_k, cache_v)
-            for name, buf in m.named_buffers(recurse=False):
-                if buf is not None and buf.device.type == "meta":
-                    m.register_buffer(name, torch.zeros(buf.shape, dtype=buf.dtype, device=device))
-
-            # Catch loose attributes attached to the module
-            for name, attr in vars(m).items():
-                if isinstance(attr, torch.Tensor) and attr.device.type == "meta":
-                    setattr(m, name, torch.zeros(tuple(attr.shape), dtype=attr.dtype, device=device))
 
         # 2. Safe sweep for the custom KV Compressors (Catching lists/dicts)
         compressors_to_sweep = []
@@ -362,8 +360,8 @@ class LlamaCompressed(Llama):
             for i, layer in enumerate(self.model.layers):
                 self.model.layers[i] = layer.to(device="cuda", dtype=torch.bfloat16)
 
-            if device == "cuda":
-                torch.cuda.empty_cache() 
+                if device == "cuda":
+                    torch.cuda.empty_cache() 
 
             # Move final Norm to CUDA
             self.model.norm = self.model.norm.to(device=device, dtype=torch.bfloat16)
@@ -417,7 +415,7 @@ class LlamaGenerator:
                     current_token = next_token.unsqueeze(0)
                     current_pos += logits.shape[1]
 
-            response = llama.tokenizer.decode(generated_token)
+            response = llama.model.tokenizer.decode(generated_token)
             for tok in ("<|eot_id|>", "<|eos_id|>", "<|end_of_text|>",
                     "<|start_header_id|>", "<|end_header_id|>"):
                 response = response.replace(tok, "")
