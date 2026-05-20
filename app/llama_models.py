@@ -415,7 +415,7 @@ class LlamaGenerator:
                     current_token = next_token.unsqueeze(0)
                     current_pos += logits.shape[1]
 
-            response = llama.model.tokenizer.decode(generated_token)
+            response = llama.tokenizer.decode(generated_token)
             for tok in ("<|eot_id|>", "<|eos_id|>", "<|end_of_text|>",
                     "<|start_header_id|>", "<|end_header_id|>"):
                 response = response.replace(tok, "")
