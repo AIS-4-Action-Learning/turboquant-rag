@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # Core dependencies for rag_library
 
 # Vector store (CPU build is fine for our research scale)
