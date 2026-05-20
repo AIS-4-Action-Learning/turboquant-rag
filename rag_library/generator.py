@@ -295,13 +295,9 @@ class BF16LlamaGenerator(_LlamaGeneratorBase, Generator):
         prompt_len = len(prompt_tokens)
         gen_limit = max(0, self.max_tokens - prompt_len)
 
-        generated_tokens = self.llama_generator.generate(prompt_tensors, self.llama, gen_limit)
-        response = self.llama.tokenizer.decode(generated_tokens)
+        response = self.llama_generator.generate(prompt_tensors, self.llama, gen_limit)
 
-        for tok in ("<|eot_id|>", "<|eos_id|>", "<|end_of_text|>",
-                    "<|start_header_id|>", "<|end_header_id|>"):
-            response = response.replace(tok, "")
-        return response.strip()
+        return response
 
 
 # ---------------------------------------------------------------------------
@@ -343,10 +339,6 @@ class TurboQuantLlamaGenerator(_LlamaGeneratorBase, Generator):
         prompt_len = len(prompt_tokens)
         gen_limit = max(0, self.max_tokens - prompt_len)
 
-        generated_tokens = self.llama_generator.generate(prompt_tensors, self.llama, gen_limit)
-        response = self.llama.tokenizer.decode(generated_tokens)
+        response = self.llama_generator.generate(prompt_tensors, self.llama, gen_limit)
 
-        for tok in ("<|eot_id|>", "<|eos_id|>", "<|end_of_text|>",
-                    "<|start_header_id|>", "<|end_header_id|>"):
-            response = response.replace(tok, "")
-        return response.strip()
+        return response
