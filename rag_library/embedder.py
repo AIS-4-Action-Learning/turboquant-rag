@@ -228,11 +228,7 @@ class BF16LlamaEmbedder(_LlamaEmbedderBase, Embedder):
         # TODO: load the model here once framework is decided.
 
     def embed(self, texts: List[str]) -> List[List[float]]:
-        raise NotImplementedError(
-            "BF16LlamaEmbedder.embed not yet implemented. "
-            "Awaiting framework decision and integration."
-        )
-
+        pass
 
 # ---------------------------------------------------------------------------
 # Llama TurboQuant (compressed) — STUB, to be implemented
