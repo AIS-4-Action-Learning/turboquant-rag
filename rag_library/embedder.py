@@ -15,7 +15,7 @@ Class hierarchy:
 import time
 from abc import ABC, abstractmethod
 from typing import List
-
+from app.llama_models import LlamaEmbedder, LlamaBF16
 
 # ---------------------------------------------------------------------------
 # Public abstract base class
@@ -228,7 +228,7 @@ class BF16LlamaEmbedder(_LlamaEmbedderBase, Embedder):
         # TODO: load the model here once framework is decided.
 
     def embed(self, texts: List[str]) -> List[List[float]]:
-        pass
+
 
 # ---------------------------------------------------------------------------
 # Llama TurboQuant (compressed) — STUB, to be implemented
