@@ -380,27 +380,28 @@ class LlamaCompressed(Llama):
 class LlamaGenerator:
     def generate(self, tensor_tokens : torch.Tensor,
                  llama : LlamaBF16 | LlamaCompressed,
-                 max_gen_len : int = 1024):
+                 max_gen_len : int = 1024) -> str:
 
         try:
             generated_token = []
-            import torch 
+            import torch
             with torch.no_grad():
                 current_pos = 0
                 seq_len = tensor_tokens.shape[1]
 
                 # Warmup loop for compressed KV cache
                 if seq_len > 1:
-                    for i in range(seq_len - 1):
-                        token = tensor_tokens[:, i:i+1].contiguous()
-                        _ = llama.model.forward(token, current_pos)
-                        if llama.device == "cuda":
-                            torch.cuda.synchronize()
-                        current_pos += 1
+                    # Pass ALL prompt tokens up to the second-to-last one simultaneously
+                    prefill_prompt = tensor_tokens[:, :-1].contiguous()
+                    _ = llama.model.forward(prefill_prompt, start_pos=0)
+                    current_pos = seq_len - 1
+
+                    if llama.device == "cuda":
+                        torch.cuda.synchronize()
 
                 current_token = tensor_tokens[:, -1:].contiguous()
 
-                for step in range(max_gen_len):
+                for _ in range(max_gen_len):
                     logits = llama.model.forward(current_token, current_pos)
 
 
@@ -414,8 +415,47 @@ class LlamaGenerator:
                     current_token = next_token.unsqueeze(0)
                     current_pos += logits.shape[1]
 
-            return generated_token
+            response = llama.model.tokenizer.decode(generated_token)
+            for tok in ("<|eot_id|>", "<|eos_id|>", "<|end_of_text|>",
+                    "<|start_header_id|>", "<|end_header_id|>"):
+                response = response.replace(tok, "")
+
+            return response.strip()
         except Exception as e:
             import traceback
             traceback.print_exc()
-            return generated_token
+            print(e)
+            return ""
+
+
+class LlamaEmbedder:
+    def embed_token_tensor(self, embedder: LlamaBF16 | LlamaCompressed,
+                           token_tensors: torch.Tensor
+                           ) -> torch.Tensor:
+        try:
+            embedded_tensor = embedder.model.get_embeddings(token_tensors)
+            if torch._is_zerotensor(embedded_tensor):
+                raise Exception("An error occured during embedding tensor.")
+
+            return embedded_tensor
+        except Exception as e:
+            print(e)
+            _bsz, seqlen = token_tensors.shape
+            return torch.zeros((_bsz, seqlen), dtype=torch.float16)
+
+
+def format_prompt(prompt: str, context: str, sysprompt: str) -> str:
+        user_content = (
+            f"Context:\n{context}\n\n"
+            f"Question: {prompt}"
+        )
+
+        # Llama 3.1 chat template (IDs: <|begin_of_text|>=128000,
+        # <|start_header_id|>=128006, <|end_header_id|>=128007, <|eot_id|>=128009)
+        return (
+            f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n"
+            f"{sysprompt}<|eot_id|>"
+            f"<|start_header_id|>user<|end_header_id|>\n\n"
+            f"{user_content}<|eot_id|>"
+            f"<|start_header_id|>assistant<|end_header_id|>\n\n"
+        )
