@@ -16,7 +16,7 @@ Class hierarchy:
 import time
 from abc import ABC, abstractmethod
 from typing import no_type_check
-from app.llama_models import LlamaBF16, LlamaCompressed, LlamaGenerator, format_prompt
+from app.llama_models import Llama, LlamaBF16, LlamaCompressed, LlamaGenerator, format_prompt
 
 # ---------------------------------------------------------------------------
 # Public abstract base class
@@ -263,19 +263,18 @@ class BF16LlamaGenerator(_LlamaGeneratorBase, Generator):
     Both Llama generators should use the SAME framework for fair comparison.
     """
 
-    def __init__(self, model_path: str, max_tokens: int = 500):
+    def __init__(self, model: LlamaBF16, max_tokens: int = 500):
         """
         Args:
             model_path: Path or HF identifier for the Llama 3.1 8B BF16 model.
             max_tokens: Maximum tokens in the response.
         """
-        self.model_path = model_path
+        self.llama = model
         self.max_tokens = max_tokens
         self.system_prompt = self.DEFAULT_SYSTEM_PROMPT
 
         # TODO: load the model here once framework is decided.
 
-        self.llama = LlamaBF16(self.max_tokens, 1)
         self.llama_generator = LlamaGenerator()
 
     def generate(self, query: str, context: str) -> str:
@@ -305,7 +304,7 @@ class TurboQuantLlamaGenerator(_LlamaGeneratorBase, Generator):
     integrated as a Python library and the BF16 framework is chosen.
     """
 
-    def __init__(self, model_path: str, bit_width: int = 3, max_tokens: int = 500):
+    def __init__(self, model: LlamaCompressed, max_tokens: int = 500):
         """
         Args:
             model_path: Path or HF identifier for the Llama 3.1 8B model.
@@ -313,13 +312,11 @@ class TurboQuantLlamaGenerator(_LlamaGeneratorBase, Generator):
                        Default 3 is the target configuration for the research.
             max_tokens: Maximum tokens in the response.
         """
-        self.model_path = model_path
-        self.bit_width = bit_width
         self.max_tokens = max_tokens
         self.system_prompt = self.DEFAULT_SYSTEM_PROMPT
 
         # TODO: load the model + apply TurboQuant compression here.
-        self.llama = LlamaCompressed(max_seq_length=self.max_tokens, batch_size=1, bit_width=bit_width)
+        self.llama = model
         self.llama_generator = LlamaGenerator()
 
     def generate(self, query: str, context: str) -> str:
