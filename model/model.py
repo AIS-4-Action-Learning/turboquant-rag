@@ -194,8 +194,8 @@ class Attention(nn.Module):
                 self.cache_k_bstring, self.cache_k_qjl, self.cache_k_orig, self.cache_k_res = self._allocate_cache(self.kv_cache_compressor, args)
                 self.cache_v_bstring, self.cache_v_qjl, self.cache_v_orig, self.cache_v_res = self._allocate_cache(self.kv_cache_compressor, args)
         else:
-            self.cache_k = torch.zeros((args.max_batch_size, args.max_seq_len, self.n_local_kv_heads, self.head_dim))
-            self.cache_v = torch.zeros((args.max_batch_size, args.max_seq_len, self.n_local_kv_heads, self.head_dim))
+            self.cache_k = torch.empty((args.max_batch_size, args.max_seq_len, self.n_local_kv_heads, self.head_dim), device="meta")
+            self.cache_v = torch.empty((args.max_batch_size, args.max_seq_len, self.n_local_kv_heads, self.head_dim), device="meta")
 
     def _allocate_cache(self, compressor, args):
         """Helper to cleanly build the massive tensors based on the dynamic budget"""
@@ -204,10 +204,10 @@ class Attention(nn.Module):
         shape = (args.max_batch_size, args.max_seq_len, self.n_local_kv_heads, 1) # n_blocks is 1 since slice matches block_size
 
         return (
-            torch.zeros((*shape, b_bytes), dtype=torch.uint8),
-            torch.zeros((*shape, q_bytes), dtype=torch.uint8),
-            torch.zeros(shape, dtype=torch.float32),
-            torch.zeros(shape, dtype=torch.float32)
+            torch.empty((*shape, b_bytes), dtype=torch.uint8, device="meta"),
+            torch.empty((*shape, q_bytes), dtype=torch.uint8, device="meta"),
+            torch.empty(shape, dtype=torch.float32, device="meta"),
+            torch.empty(shape, dtype=torch.float32, device="meta")
         )
 
 
@@ -481,8 +481,8 @@ class Transformer(nn.Module):
 
     @torch.inference_mode()
     def forward(self, tokens: torch.Tensor, start_pos: int):
-        _bsz, seqlen = tokens.shape
-        
+        _, seqlen = tokens.shape
+
         # Capture the original token device so we can return the logits to the right place
         original_token_device = tokens.device
 
@@ -530,3 +530,65 @@ class Transformer(nn.Module):
         output = self.output(h_out).float()
 
         return output.to(original_token_device)
+
+    @torch.inference_mode()
+    def get_embeddings(self, tokens: torch.Tensor) -> torch.Tensor:
+        _bsz, seqlen = tokens.shape
+
+        original_state = self.params.use_compressed_kv_cache
+        self.params.use_compressed_kv_cache = False
+
+        try: 
+            # Capture the original token device so we can return the logits to the right place
+            original_token_device = tokens.device
+
+            # 1. EMBEDDING PHASE (Dynamic)
+            # Move tokens to wherever the embedding layer lives (CPU for offload, GPU for pure CUDA)
+            embed_device = self.tok_embeddings.weight.device
+
+            start_pos = 0
+
+            # 1. CPU PHASE: Embeddings
+            # Ensure tokens are on CPU for the lookup
+            h = self.tok_embeddings(tokens.to(embed_device))
+
+
+            # 2. COMPUTE PHASE (Dynamic)
+            # Figure out where the heavy Transformer layers are
+            compute_device = next(self.layers[0].parameters()).device
+            h = h.to(compute_device)
+
+            self.freqs_cis = self.freqs_cis.to(h.device)
+            freqs_cis = self.freqs_cis[start_pos : start_pos + seqlen]
+
+            mask = None
+            if seqlen > 1:
+                mask = torch.full((seqlen, seqlen), float("-inf"), device=tokens.device)
+                mask = torch.triu(mask, diagonal=1)
+
+                # https://github.com/pytorch/pytorch/issues/100005
+                # torch.triu is buggy when the device is mps: filled values are
+                # nan instead of 0.
+
+                if mask.device.type == torch.device("mps").type:
+                    mask = torch.nan_to_num(mask, nan=0.0)
+
+                # When performing key-value caching, we compute the attention scores
+                # only for the new sequence. Thus, the matrix of scores is of size
+                # (seqlen, cache_len + seqlen), and the only masked entries are (i, j) for
+                # j > cache_len + i, since row i corresponds to token cache_len + i.
+                mask = torch.hstack([torch.zeros((seqlen, start_pos), device=tokens.device), mask]).type_as(h)
+
+            for layer in self.layers:
+                h = layer(h, start_pos, freqs_cis, mask)
+
+            h = self.norm(h)
+
+            last_token_embedding = h[:, -1, :]
+
+            return F.normalize(last_token_embedding, p=2, dim=-1).to(original_token_device)
+        except Exception as e:
+            print(e)
+            return torch.zeros((_bsz, self.params.dim), dtype=torch.float16, device=original_token_device)
+        finally:
+            self.params.use_compressed_kv_cache = original_state
