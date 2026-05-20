@@ -291,18 +291,6 @@ class LlamaCompressed(Llama):
 
         self.model.load_state_dict(self.checkpoints, strict=False, assign=True)
 
-        # --- THE FLAWLESS GHOST CACHE MATERIALIZER ---
-        # 1. Native PyTorch sweep for the model tree
-        for m in self.model.modules():
-            # Catch registered PyTorch buffers (like cache_k, cache_v)
-            for name, buf in m.named_buffers(recurse=False):
-                if buf is not None and buf.device.type == "meta":
-                    m.register_buffer(name, torch.empty(buf.shape, dtype=buf.dtype, device=device))
-
-            # Catch loose attributes attached to the module
-            for name, attr in vars(m).items():
-                if isinstance(attr, torch.Tensor) and attr.device.type == "meta":
-                    setattr(m, name, torch.empty(tuple(attr.shape), dtype=attr.dtype, device=device))
 
 
         # 2. Safe sweep for the custom KV Compressor (Catching lists/dicts)
@@ -322,25 +310,6 @@ class LlamaCompressed(Llama):
         #                if isinstance(v, torch.Tensor) and v.device.type == "meta":
         #                    attr[k] = torch.zeros(v.shape, dtype=v.dtype, device=device)
 
-        # 2. Safe sweep for the custom KV Compressors (Catching lists/dicts)
-        compressors_to_sweep = []
-        if self.is_mixed_precision:
-            compressors_to_sweep = [self.outlier_compressor, self.normal_compressor]
-        elif self.kv_compressor is not None:
-            compressors_to_sweep = [self.kv_compressor]
-
-        for compressor in compressors_to_sweep:
-            for name, attr in vars(compressor).items():
-                if isinstance(attr, torch.Tensor) and attr.device.type == "meta":
-                    setattr(compressor, name, torch.zeros(attr.shape, dtype=attr.dtype, device=device))
-                elif isinstance(attr, list):
-                    for i, v in enumerate(attr):
-                        if isinstance(v, torch.Tensor) and v.device.type == "meta":
-                            attr[i] = torch.zeros(v.shape, dtype=v.dtype, device=device)
-                elif isinstance(attr, dict):
-                    for k, v in attr.items():
-                        if isinstance(v, torch.Tensor) and v.device.type == "meta":
-                            attr[k] = torch.zeros(v.shape, dtype=v.dtype, device=device)
 
         # --- Aggressive Memory Management ---
         # 3. DESTROY the checkpoints dictionary to free up system overhead
@@ -375,6 +344,39 @@ class LlamaCompressed(Llama):
                 self.model.freqs_cis = self.model.freqs_cis.to(device="cuda")
 
             print("✅ Successfully squeezed model! (Saved VRAM via Offloading)")
+
+        # --- THE FLAWLESS GHOST CACHE MATERIALIZER ---
+        # 1. Native PyTorch sweep for the model tree
+        for m in self.model.modules():
+            # Catch registered PyTorch buffers (like cache_k, cache_v)
+            for name, buf in m.named_buffers(recurse=False):
+                if buf is not None and buf.device.type == "meta":
+                    m.register_buffer(name, torch.empty(buf.shape, dtype=buf.dtype, device=device))
+
+            # Catch loose attributes attached to the module
+            for name, attr in vars(m).items():
+                if isinstance(attr, torch.Tensor) and attr.device.type == "meta":
+                    setattr(m, name, torch.empty(tuple(attr.shape), dtype=attr.dtype, device=device))
+
+        # 2. Safe sweep for the custom KV Compressors (Catching lists/dicts)
+        compressors_to_sweep = []
+        if self.is_mixed_precision:
+            compressors_to_sweep = [self.outlier_compressor, self.normal_compressor]
+        elif self.kv_compressor is not None:
+            compressors_to_sweep = [self.kv_compressor]
+
+        for compressor in compressors_to_sweep:
+            for name, attr in vars(compressor).items():
+                if isinstance(attr, torch.Tensor) and attr.device.type == "meta":
+                    setattr(compressor, name, torch.empty(attr.shape, dtype=attr.dtype, device=device))
+                elif isinstance(attr, list):
+                    for i, v in enumerate(attr):
+                        if isinstance(v, torch.Tensor) and v.device.type == "meta":
+                            attr[i] = torch.empty(v.shape, dtype=v.dtype, device=device)
+                elif isinstance(attr, dict):
+                    for k, v in attr.items():
+                        if isinstance(v, torch.Tensor) and v.device.type == "meta":
+                            attr[k] = torch.empty(v.shape, dtype=v.dtype, device=device)
 
         self.model.eval()
 
