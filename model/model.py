@@ -533,28 +533,19 @@ class Transformer(nn.Module):
 
     @torch.inference_mode()
     def get_embeddings(self, tokens: torch.Tensor) -> torch.Tensor:
-        _bsz, seqlen = tokens.shape
+        bsz, seqlen = tokens.shape
+        original_token_device = tokens.device
 
         original_state = self.params.use_compressed_kv_cache
         self.params.use_compressed_kv_cache = False
 
-        try: 
-            # Capture the original token device so we can return the logits to the right place
-            original_token_device = tokens.device
-
+        try:
             # 1. EMBEDDING PHASE (Dynamic)
-            # Move tokens to wherever the embedding layer lives (CPU for offload, GPU for pure CUDA)
             embed_device = self.tok_embeddings.weight.device
-
             start_pos = 0
-
-            # 1. CPU PHASE: Embeddings
-            # Ensure tokens are on CPU for the lookup
             h = self.tok_embeddings(tokens.to(embed_device))
 
-
             # 2. COMPUTE PHASE (Dynamic)
-            # Figure out where the heavy Transformer layers are
             compute_device = next(self.layers[0].parameters()).device
             h = h.to(compute_device)
 
@@ -563,32 +554,27 @@ class Transformer(nn.Module):
 
             mask = None
             if seqlen > 1:
-                mask = torch.full((seqlen, seqlen), float("-inf"), device=tokens.device)
+                # Build mask on the compute device so it matches attention scores
+                mask = torch.full((seqlen, seqlen), float("-inf"), device=h.device)
                 mask = torch.triu(mask, diagonal=1)
-
-                # https://github.com/pytorch/pytorch/issues/100005
-                # torch.triu is buggy when the device is mps: filled values are
-                # nan instead of 0.
-
                 if mask.device.type == torch.device("mps").type:
                     mask = torch.nan_to_num(mask, nan=0.0)
-
-                # When performing key-value caching, we compute the attention scores
-                # only for the new sequence. Thus, the matrix of scores is of size
-                # (seqlen, cache_len + seqlen), and the only masked entries are (i, j) for
-                # j > cache_len + i, since row i corresponds to token cache_len + i.
-                mask = torch.hstack([torch.zeros((seqlen, start_pos), device=tokens.device), mask]).type_as(h)
+                mask = torch.hstack([
+                    torch.zeros((seqlen, start_pos), device=h.device),
+                    mask
+                ]).type_as(h)
 
             for layer in self.layers:
                 h = layer(h, start_pos, freqs_cis, mask)
 
             h = self.norm(h)
 
+            # h shape: (bsz, seqlen, dim) — works for any batch size
             last_token_embedding = h[:, -1, :]
 
             return F.normalize(last_token_embedding, p=2, dim=-1).to(original_token_device)
         except Exception as e:
-            print(e)
-            return torch.zeros((_bsz, self.params.dim), dtype=torch.float16, device=original_token_device)
+            print(f"[get_embeddings] error: {e}")
+            return torch.zeros((bsz, self.params.dim), dtype=torch.float32, device=original_token_device)
         finally:
             self.params.use_compressed_kv_cache = original_state

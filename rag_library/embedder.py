@@ -8,14 +8,13 @@ Class hierarchy:
     Embedder (ABC)
     ├── OpenAIEmbedder
     ├── GeminiEmbedder
-    ├── BF16LlamaEmbedder       ──┐
-    └── TurboQuantLlamaEmbedder  ──┴── both inherit shared logic from _LlamaEmbedderBase
+    └── Llama3Embedder           ── uses LlamaEmbedder from app.llama_models
 """
 
 import time
 from abc import ABC, abstractmethod
 from typing import List
-from app.llama_models import Llama, LlamaEmbedder, LlamaBF16
+from app.llama_models import LlamaBF16, LlamaCompressed, LlamaEmbedder
 import torch
 
 # ---------------------------------------------------------------------------
@@ -170,75 +169,57 @@ class GeminiEmbedder(Embedder):
 
 
 # ---------------------------------------------------------------------------
-# Shared base for Llama-based embedders
+# Llama 3.1 embedder (works with both BF16 and TurboQuant models)
 # ---------------------------------------------------------------------------
 
-class _LlamaEmbedderBase:
-    """Shared logic for Llama-based embedders (BF16 and TurboQuant).
+class Llama3Embedder(Embedder):
+    """Embedder using Llama 3.1 8B via the shared LlamaEmbedder helper.
 
-    Holds tokenization, batching, and pooling logic that doesn't depend on
-    the inference path. Concrete subclasses below differ in how they
-    actually run the forward pass.
-
-    NOTE: Llama is a generative model; using it as an embedder typically
-    means taking hidden states from a chosen layer and pooling (mean,
-    last-token, etc.). The exact strategy will be decided when implementing.
-    """
-
-    DEFAULT_BATCH_SIZE = 8  # smaller than OpenAI's 50; local GPU memory limit
-    DEFAULT_POOLING = "mean"  # mean | last_token | cls — to decide on impl
-
-    def _batch(self, texts: List[str], batch_size: int):
-        """Yield batches of texts for embedding."""
-        for i in range(0, len(texts), batch_size):
-            yield texts[i : i + batch_size]
-
-
-# ---------------------------------------------------------------------------
-# Llama BF16 (baseline) — STUB, to be implemented
-# ---------------------------------------------------------------------------
-
-class Llama3Embedder(_LlamaEmbedderBase, Embedder):
-    """Embedder using BF16 (uncompressed) Llama 3.1 8B.
-
-    BASELINE for our research benchmarks. Llama 3.1 is used as both
-    generator and embedder so the entire RAG pipeline runs on a single
-    model — this matches our research narrative of evaluating TurboQuant
-    in a self-contained Llama-based pipeline.
-
-    STATUS: stub. Awaiting framework decision and pooling strategy.
+    Works with both LlamaBF16 and LlamaCompressed model wrappers.
+    Handles batched inference by left-padding sequences to the same length
+    within each micro-batch and passing a single (bsz, seqlen) tensor to
+    the underlying Transformer.get_embeddings method.
     """
 
     def __init__(
         self,
-        model_path: str,
-        batch_size: int = _LlamaEmbedderBase.DEFAULT_BATCH_SIZE,
-        pooling: str = _LlamaEmbedderBase.DEFAULT_POOLING,
+        model: LlamaBF16 | LlamaCompressed,
+        batch_size: int = 8,
     ):
-        """
-        Args:
-            model_path: Path or HF identifier for Llama 3.1 8B BF16.
-            batch_size: Number of texts per forward pass.
-            pooling: How to pool hidden states into a single vector
-                     ("mean", "last_token", or "cls").
-        """
-        self.model_path = model_path
+        self.model = model
         self.batch_size = batch_size
-        self.pooling = pooling
-
-        # TODO: load the model here once framework is decided.
-        self.model = LlamaBF16(1024, 1)
-        self.llama_embedder = LlamaEmbedder()
+        self._llama_embedder = LlamaEmbedder()
 
     def embed(self, texts: List[str]) -> List[List[float]]:
-        try:
-            tensors = [self.model.input_encoding(t) for t in texts]
-            return [
-                self.llama_embedder.embed_token_tensor(
-                    self.model,
-                    tensor[1]
-                ).cpu().tolist() for tensor in tensors
-            ]
-        except Exception as e:
-            print(e)
-            return [[]]
+        if not texts:
+            return []
+
+        # Tokenize everything first so we can batch by padded length
+        encoded: List[List[int]] = []
+        for text in texts:
+            tokens = self.model.tokenizer.encode(text, bos=True, eos=False)
+            encoded.append(tokens)
+
+        embeddings: List[List[float]] = []
+
+        for i in range(0, len(texts), self.batch_size):
+            batch_tokens = encoded[i : i + self.batch_size]
+            max_len = max(len(t) for t in batch_tokens)
+
+            # Left-pad with 0 so the last real token is always at position -1.
+            # get_embeddings returns h[:, -1, :], so the right-most token matters.
+            padded: List[List[int]] = []
+            for t in batch_tokens:
+                padded.append([0] * (max_len - len(t)) + t)
+
+            batch_tensor = torch.tensor(
+                padded,
+                dtype=torch.long,
+                device=self.model.device,
+            )
+
+            # LlamaEmbedder returns (bsz, dim) and already L2-normalizes
+            emb = self._llama_embedder.embed_token_tensor(self.model, batch_tensor)
+            embeddings.extend(emb.cpu().float().tolist())
+
+        return embeddings

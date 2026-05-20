@@ -434,14 +434,14 @@ class LlamaEmbedder:
                            ) -> torch.Tensor:
         try:
             embedded_tensor = embedder.model.get_embeddings(token_tensors)
-            if torch._is_zerotensor(embedded_tensor):
-                raise Exception("An error occured during embedding tensor.")
-
+            if embedded_tensor.abs().max().item() < 1e-12:
+                raise RuntimeError("get_embeddings returned all zeros")
             return embedded_tensor
         except Exception as e:
-            print(e)
-            _bsz, seqlen = token_tensors.shape
-            return torch.zeros((_bsz, seqlen), dtype=torch.float16)
+            print(f"[LlamaEmbedder] error: {e}")
+            bsz = token_tensors.shape[0]
+            dim = embedder.params.get("dim", 4096)
+            return torch.zeros((bsz, dim), dtype=torch.float32, device=token_tensors.device)
 
 
 def format_prompt(prompt: str, context: str, sysprompt: str) -> str:

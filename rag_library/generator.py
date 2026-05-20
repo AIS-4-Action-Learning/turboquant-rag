@@ -16,7 +16,7 @@ Class hierarchy:
 import time
 from abc import ABC, abstractmethod
 from typing import no_type_check
-from app.llama_models import LlamaBF16, LlamaCompressed, LlamaGenerator
+from app.llama_models import LlamaBF16, LlamaCompressed, LlamaGenerator, format_prompt
 
 # ---------------------------------------------------------------------------
 # Public abstract base class
@@ -241,21 +241,10 @@ class _LlamaGeneratorBase:
         Llama 3.1 is instruction-tuned on a strict chat template. Without it,
         the model produces incoherent noise and repetitive loops.
         """
-        user_content = (
-            f"Context:\n{context}\n\n"
-            f"Question: {query}"
-        )
 
         # Llama 3.1 chat template (IDs: <|begin_of_text|>=128000,
         # <|start_header_id|>=128006, <|end_header_id|>=128007, <|eot_id|>=128009)
-        return (
-            f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n"
-            f"{self.DEFAULT_SYSTEM_PROMPT}<|eot_id|>"
-            f"<|start_header_id|>user<|end_header_id|>\n\n"
-            f"{user_content}<|eot_id|>"
-            f"<|start_header_id|>assistant<|end_header_id|>\n\n"
-        )
-
+        return format_prompt(query, context, self.DEFAULT_SYSTEM_PROMPT)
 
 # ---------------------------------------------------------------------------
 # Llama BF16 (baseline) — STUB, to be implemented

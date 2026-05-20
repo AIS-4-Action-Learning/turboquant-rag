@@ -54,8 +54,7 @@ from .embedder import (
     Embedder,
     OpenAIEmbedder,
     GeminiEmbedder,
-    BF16LlamaEmbedder,
-    TurboQuantLlamaEmbedder,
+    Llama3Embedder,
 )
 from .generator import (
     Generator,
@@ -84,6 +83,5 @@ __all__ = [
     "Embedder",
     "OpenAIEmbedder",
     "GeminiEmbedder",
-    "BF16LlamaEmbedder",
-    "TurboQuantLlamaEmbedder",
+    "Llama3Embedder",
 ]
