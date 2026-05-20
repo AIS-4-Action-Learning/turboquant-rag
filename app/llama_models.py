@@ -360,8 +360,8 @@ class LlamaCompressed(Llama):
             for i, layer in enumerate(self.model.layers):
                 self.model.layers[i] = layer.to(device="cuda", dtype=torch.bfloat16)
 
-                if device == "cuda":
-                    torch.cuda.empty_cache() 
+            if device == "cuda":
+                torch.cuda.empty_cache() 
 
             # Move final Norm to CUDA
             self.model.norm = self.model.norm.to(device=device, dtype=torch.bfloat16)
