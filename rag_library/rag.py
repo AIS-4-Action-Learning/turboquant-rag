@@ -153,7 +153,7 @@ class RAG:
 
         return self.vector_store.search(query_embedding, k=k)
 
-    def query(self, query: str, k: Optional[int] = None) -> Dict:
+    def query(self, query: str, k: Optional[int] = None, omit_sysprompt: bool = False) -> Dict:
         """Run the full RAG pipeline: retrieve + generate.
 
         Args:
@@ -171,7 +171,7 @@ class RAG:
         """
         retrieved = self.retrieve(query, k=k)
         context = self._format_context(retrieved)
-        answer = self.generator.generate(query, context)
+        answer = self.generator.generate(query, context, omit_sysprompt)
 
         return {
             "query": query,

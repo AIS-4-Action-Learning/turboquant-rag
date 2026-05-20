@@ -30,7 +30,7 @@ class Generator(ABC):
     """
 
     @abstractmethod
-    def generate(self, query: str, context: str) -> str:
+    def generate(self, query: str, context: str, omit_sysprompt: bool) -> str:
         """Generate an answer given a query and retrieved context.
 
         Args:
@@ -90,11 +90,11 @@ class OpenAIGenerator(Generator):
         - If the question asks what NOT to do, infer the answer from what the context has
         """
 
-    def generate(self, query: str, context: str) -> str:
+    def generate(self, query: str, context: str, omit_sysprompt: bool) -> str:
         response = self.client.chat.completions.create(
             model=self.model,
             messages=[
-                {"role": "system", "content": self.system_prompt},
+                {"role": "system", "content": self.system_prompt if not omit_sysprompt else ""},
                 {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"},
             ],
             temperature=self.temperature,
@@ -180,11 +180,12 @@ class GeminiGenerator(Generator):
             time.sleep(self.min_interval_seconds - elapsed)
         self._last_request_time = time.time()
 
-    def generate(self, query: str, context: str) -> str:
+    def generate(self, query: str, context: str, omit_sysprompt: bool) -> str:
         # Gemini doesn't have a separate "system message" role like OpenAI;
         # we prepend the system prompt to the user content.
+        sysprompt = self.system_prompt if not omit_sysprompt else ""
         prompt = (
-            f"{self.system_prompt}\n\n"
+            f"{sysprompt}\n\n"
             f"Context:\n{context}\n\n"
             f"Question: {query}"
         )
@@ -235,16 +236,17 @@ class _LlamaGeneratorBase:
     - If the question asks what NOT to do, infer the answer from what the context has
     """
 
-    def _format_prompt(self, query: str, context: str) -> str:
+    def _format_prompt(self, query: str, context: str, omit_sysprompt: bool) -> str:
         """Format query + context into a Llama 3.1 chat-template string.
 
         Llama 3.1 is instruction-tuned on a strict chat template. Without it,
         the model produces incoherent noise and repetitive loops.
         """
+        sysprompt = self.DEFAULT_SYSTEM_PROMPT if not omit_sysprompt else ""
 
         # Llama 3.1 chat template (IDs: <|begin_of_text|>=128000,
         # <|start_header_id|>=128006, <|end_header_id|>=128007, <|eot_id|>=128009)
-        return format_prompt(query, context, self.DEFAULT_SYSTEM_PROMPT)
+        return format_prompt(query, context, sysprompt)
 
 # ---------------------------------------------------------------------------
 # Llama BF16 (baseline) — STUB, to be implemented
@@ -277,8 +279,8 @@ class BF16LlamaGenerator(_LlamaGeneratorBase, Generator):
 
         self.llama_generator = LlamaGenerator()
 
-    def generate(self, query: str, context: str) -> str:
-        formatted_prompt = self._format_prompt(query, context)
+    def generate(self, query: str, context: str, omit_sysprompt: bool) -> str:
+        formatted_prompt = self._format_prompt(query, context, omit_sysprompt)
         prompt_tokens, prompt_tensors = self.llama.input_encoding(formatted_prompt)
         prompt_len = len(prompt_tokens)
         gen_limit = max(0, self.max_tokens - prompt_len)
@@ -319,8 +321,8 @@ class TurboQuantLlamaGenerator(_LlamaGeneratorBase, Generator):
         self.llama = model
         self.llama_generator = LlamaGenerator()
 
-    def generate(self, query: str, context: str) -> str:
-        formatted_prompt = self._format_prompt(query, context)
+    def generate(self, query: str, context: str, omit_sysprompt: bool) -> str:
+        formatted_prompt = self._format_prompt(query, context, omit_sysprompt)
         prompt_tokens, prompt_tensors = self.llama.input_encoding(formatted_prompt)
         prompt_len = len(prompt_tokens)
         gen_limit = max(0, self.max_tokens - prompt_len)
