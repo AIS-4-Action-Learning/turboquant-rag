@@ -325,8 +325,8 @@ class TurboQuantLlamaGenerator(_LlamaGeneratorBase, Generator):
         formatted_prompt = self._format_prompt(query, context, omit_sysprompt)
         prompt_tokens, prompt_tensors = self.llama.input_encoding(formatted_prompt)
         prompt_len = len(prompt_tokens)
-        gen_limit = max(0, self.max_tokens - prompt_len)
+        # gen_limit = max(0, self.max_tokens - prompt_len)
 
-        response = self.llama_generator.generate(prompt_tensors, self.llama, gen_limit)
+        response = self.llama_generator.generate(prompt_tensors, self.llama, 30)
 
         return response
