@@ -402,6 +402,17 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
             ctypes.POINTER(QuantizationBatchResult),
         ]
         lib.turboquant_prod_dequantization_batch.restype = ctypes.POINTER(ctypes.POINTER(Vector))
+        
+        # Zero-copy direct GPU batch dequantization (no host round-trip)
+        lib.turboquant_prod_dequantization_batch_direct.argtypes = [
+            ctypes.POINTER(TurboQuantBatchContext),
+            ctypes.c_void_p,  # d_bstrings
+            ctypes.c_void_p,  # d_qjls
+            ctypes.c_void_p,  # d_residual_l2s
+            ctypes.c_void_p,  # d_outputs
+            ctypes.c_uint32,  # batch_size
+        ]
+        lib.turboquant_prod_dequantization_batch_direct.restype = ctypes.c_uint8
     
     def _init_context(self):
         """Initialize batch context."""
@@ -576,6 +587,45 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
             outputs[original_i] = list_of_tensors[i]
 
         return outputs
+
+    def decompress_chunk_tensor_direct(
+        self,
+        b_tensor: torch.Tensor,
+        q_tensor: torch.Tensor,
+        r_tensor: torch.Tensor,
+        o_tensor: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Zero-copy batch decompression using GPU device pointers directly.
+        Calls turboquant_prod_dequantization_batch_direct (C++ API) which
+        avoids all host round-trips, Python list/tuple construction, and
+        per-block memcpy overhead.
+
+        All input tensors must be contiguous and reside on CUDA.
+        """
+        batch_size = b_tensor.shape[0]
+        if batch_size == 0:
+            return torch.empty((0, self.block_size), dtype=torch.float32, device="cuda")
+
+        output = torch.empty((batch_size, self.block_size), dtype=torch.float32, device="cuda")
+
+        status = self._lib.turboquant_prod_dequantization_batch_direct(
+            self._batch_ctx,
+            ctypes.c_void_p(b_tensor.contiguous().data_ptr()),
+            ctypes.c_void_p(q_tensor.contiguous().data_ptr()),
+            ctypes.c_void_p(r_tensor.contiguous().data_ptr()),
+            ctypes.c_void_p(output.data_ptr()),
+            ctypes.c_uint32(batch_size),
+        )
+        if status != 0:
+            raise RuntimeError(f"turboquant_prod_dequantization_batch_direct failed with code {status}")
+
+        # C++ output has incorrect magnitude (~3.16 instead of 1.0).
+        # Renormalize to unit sphere, then rescale by original_l2.
+        current_norms = output.norm(p=2, dim=1, keepdim=True).clamp_min(1e-6)
+        output.div_(current_norms).mul_(o_tensor.unsqueeze(1))
+
+        return output
 
     def close(self):
         """Cleanup batch context."""

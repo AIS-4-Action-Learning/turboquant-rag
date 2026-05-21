@@ -281,30 +281,45 @@ class Attention(nn.Module):
         target_device: torch.device,
         target_dtype: torch.dtype,
     ) -> torch.Tensor:
-        """Vectorized fetching: Converts cache slices to C-input in bulk."""
-        # 1. Slice and flatten everything to CPU
+        """Vectorized fetching: Converts cache slices to decompressed tensors."""
+        # ------------------------------------------------------------------
+        # FAST PATH: zero-copy GPU direct decompression (simt-multi only)
+        # Avoids cpu().tolist(), cpu().numpy(), Python tuple lists, and
+        # per-block host round-trips.
+        # ------------------------------------------------------------------
+        if hasattr(compressor, "decompress_chunk_tensor_direct"):
+            b_bytes = (int(compressor.bit_width) * int(compressor.block_size) + 7) // 8
+            q_bytes = (int(compressor.block_size) + 7) // 8
+            total_blocks = bsz * cache_len * self.n_local_kv_heads
+
+            # Slice, flatten, and bulk-move to GPU in one go (cache may be on CPU)
+            b_flat = c_bstring[:bsz, :cache_len].contiguous().reshape(-1, b_bytes).to(target_device)
+            q_flat = c_qjl[:bsz, :cache_len].contiguous().reshape(-1, q_bytes).to(target_device)
+            r_flat = c_res[:bsz, :cache_len].contiguous().reshape(-1).to(target_device)
+            o_flat = c_orig[:bsz, :cache_len].contiguous().reshape(-1).to(target_device)
+
+            output = compressor.decompress_chunk_tensor_direct(b_flat, q_flat, r_flat, o_flat)
+            return output.view(bsz, cache_len, self.n_local_kv_heads, compressor.block_size).to(target_dtype)
+
+        # ------------------------------------------------------------------
+        # SLOW PATH: host round-trip via Python lists (fallback for simd / single-stream)
+        # ------------------------------------------------------------------
         o_flat = c_orig[:bsz, :cache_len].reshape(-1).cpu().tolist()
         r_flat = c_res[:bsz, :cache_len].reshape(-1).cpu().tolist()
 
         b_bytes = (int(compressor.bit_width) * int(compressor.block_size) + 7) // 8
         q_bytes = (int(compressor.block_size) + 7) // 8
 
-        # Reshape bitstrings to (N, BytesPerBlock) before calling .numpy()
         b_flat = c_bstring[:bsz, :cache_len].contiguous().reshape(-1, b_bytes).cpu().numpy()
         q_flat = c_qjl[:bsz, :cache_len].contiguous().reshape(-1, q_bytes).cpu().numpy()
 
-        # 2. Reconstruct the list of tuples for the decompressor
         compressed_blocks = [
             (o_flat[i], r_flat[i], b_flat[i].tobytes(), q_flat[i].tobytes())
             for i in range(len(o_flat))
         ]
 
-        # 3. Batch Decompress (The C-API Multi-threaded call)
         decompressed_blocks = compressor.decompress_chunk(compressed_blocks)
-
-        # 4. Stack and view back to (B, S, H, D)
         stacked = torch.stack(decompressed_blocks, dim=0).to(device=target_device, dtype=target_dtype)
-
         return stacked.view(bsz, cache_len, self.n_local_kv_heads, compressor.block_size)
 
     def forward(
@@ -338,28 +353,35 @@ class Attention(nn.Module):
                 xv_out = xv[..., :self.outlier_dim]
                 xv_norm = xv[..., self.outlier_dim:]
 
-                # 2. Store independently
+                # 2. Store independently (always needed for future autoregressive steps)
                 self._store_compressed_cache(xk_out, bsz, seqlen, start_pos, self.outlier_compressor, self.cache_k_bstring_outlier, self.cache_k_qjl_outlier, self.cache_k_orig_outlier, self.cache_k_res_outlier)
                 self._store_compressed_cache(xk_norm, bsz, seqlen, start_pos, self.normal_compressor, self.cache_k_bstring_normal, self.cache_k_qjl_normal, self.cache_k_orig_normal, self.cache_k_res_normal)
                 self._store_compressed_cache(xv_out, bsz, seqlen, start_pos, self.outlier_compressor, self.cache_v_bstring_outlier, self.cache_v_qjl_outlier, self.cache_v_orig_outlier, self.cache_v_res_outlier)
                 self._store_compressed_cache(xv_norm, bsz, seqlen, start_pos, self.normal_compressor, self.cache_v_bstring_normal, self.cache_v_qjl_normal, self.cache_v_orig_normal, self.cache_v_res_normal)
 
-                # 3. Fetch independently
-                k_out = self._fetch_decompressed_cache(bsz, cache_len, self.outlier_compressor, self.cache_k_bstring_outlier, self.cache_k_qjl_outlier, self.cache_k_orig_outlier, self.cache_k_res_outlier, xq.device, xq.dtype)
-                k_norm = self._fetch_decompressed_cache(bsz, cache_len, self.normal_compressor, self.cache_k_bstring_normal, self.cache_k_qjl_normal, self.cache_k_orig_normal, self.cache_k_res_normal, xq.device, xq.dtype)
-                v_out = self._fetch_decompressed_cache(bsz, cache_len, self.outlier_compressor, self.cache_v_bstring_outlier, self.cache_v_qjl_outlier, self.cache_v_orig_outlier, self.cache_v_res_outlier, xq.device, xq.dtype)
-                v_norm = self._fetch_decompressed_cache(bsz, cache_len, self.normal_compressor, self.cache_v_bstring_normal, self.cache_v_qjl_normal, self.cache_v_orig_normal, self.cache_v_res_normal, xq.device, xq.dtype)
-
-                # 4. Concatenate back to 128-dim head
-                keys = torch.cat([k_out, k_norm], dim=-1)
-                values = torch.cat([v_out, v_norm], dim=-1)
+                # 3. For initial prefill (start_pos==0), use fresh keys/values directly
+                #    to skip expensive decompression and avoid quantization error.
+                if start_pos == 0:
+                    keys = xk
+                    values = xv
+                else:
+                    k_out = self._fetch_decompressed_cache(bsz, cache_len, self.outlier_compressor, self.cache_k_bstring_outlier, self.cache_k_qjl_outlier, self.cache_k_orig_outlier, self.cache_k_res_outlier, xq.device, xq.dtype)
+                    k_norm = self._fetch_decompressed_cache(bsz, cache_len, self.normal_compressor, self.cache_k_bstring_normal, self.cache_k_qjl_normal, self.cache_k_orig_normal, self.cache_k_res_normal, xq.device, xq.dtype)
+                    v_out = self._fetch_decompressed_cache(bsz, cache_len, self.outlier_compressor, self.cache_v_bstring_outlier, self.cache_v_qjl_outlier, self.cache_v_orig_outlier, self.cache_v_res_outlier, xq.device, xq.dtype)
+                    v_norm = self._fetch_decompressed_cache(bsz, cache_len, self.normal_compressor, self.cache_v_bstring_normal, self.cache_v_qjl_normal, self.cache_v_orig_normal, self.cache_v_res_normal, xq.device, xq.dtype)
+                    keys = torch.cat([k_out, k_norm], dim=-1)
+                    values = torch.cat([v_out, v_norm], dim=-1)
 
             else:
                 self._store_compressed_cache(xk, bsz, seqlen, start_pos, self.kv_cache_compressor, self.cache_k_bstring, self.cache_k_qjl, self.cache_k_orig, self.cache_k_res)
                 self._store_compressed_cache(xv, bsz, seqlen, start_pos, self.kv_cache_compressor, self.cache_v_bstring, self.cache_v_qjl, self.cache_v_orig, self.cache_v_res)
 
-                keys = self._fetch_decompressed_cache(bsz, cache_len, self.kv_cache_compressor, self.cache_k_bstring, self.cache_k_qjl, self.cache_k_orig, self.cache_k_res, xq.device, xq.dtype)
-                values = self._fetch_decompressed_cache(bsz, cache_len, self.kv_cache_compressor, self.cache_v_bstring, self.cache_v_qjl, self.cache_v_orig, self.cache_v_res, xq.device, xq.dtype)
+                if start_pos == 0:
+                    keys = xk
+                    values = xv
+                else:
+                    keys = self._fetch_decompressed_cache(bsz, cache_len, self.kv_cache_compressor, self.cache_k_bstring, self.cache_k_qjl, self.cache_k_orig, self.cache_k_res, xq.device, xq.dtype)
+                    values = self._fetch_decompressed_cache(bsz, cache_len, self.kv_cache_compressor, self.cache_v_bstring, self.cache_v_qjl, self.cache_v_orig, self.cache_v_res, xq.device, xq.dtype)
             t3 = time.perf_counter()
 
         else:
