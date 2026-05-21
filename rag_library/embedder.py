@@ -170,8 +170,12 @@ class GeminiEmbedder(Embedder):
 class BGEmbedder(Embedder):
     def __init__(self, batch_size: int = 12, embedding_dim: int = 1024):
 
-        self.model = BGEM3FlagModel('BAAI/bge-m3',
-                       use_fp16=True)
+        self.model = BGEM3FlagModel(
+            'BAAI/bge-m3',
+            use_fp16=True,
+            device='cpu'
+        )
+
         self.batch_size = batch_size
         self.embedding_dim = embedding_dim
 
