@@ -212,6 +212,35 @@ class Attention(nn.Module):
             torch.zeros(shape, dtype=torch.float32)
         )
 
+    def _materialize_cache_tensor(self, tensor: torch.Tensor, device: torch.device) -> torch.Tensor:
+        if tensor.device == device:
+            return tensor
+        if tensor.device.type == "meta":
+            return torch.zeros(tuple(tensor.shape), dtype=tensor.dtype, device=device)
+        return tensor.to(device)
+
+    def _ensure_compressed_cache_device(self, device: torch.device) -> None:
+        if not self.use_compressed_kv_cache:
+            return
+
+        if self.is_mixed_precision:
+            cache_names = [
+                "cache_k_bstring_outlier", "cache_k_qjl_outlier", "cache_k_orig_outlier", "cache_k_res_outlier",
+                "cache_v_bstring_outlier", "cache_v_qjl_outlier", "cache_v_orig_outlier", "cache_v_res_outlier",
+                "cache_k_bstring_normal", "cache_k_qjl_normal", "cache_k_orig_normal", "cache_k_res_normal",
+                "cache_v_bstring_normal", "cache_v_qjl_normal", "cache_v_orig_normal", "cache_v_res_normal",
+            ]
+        else:
+            cache_names = [
+                "cache_k_bstring", "cache_k_qjl", "cache_k_orig", "cache_k_res",
+                "cache_v_bstring", "cache_v_qjl", "cache_v_orig", "cache_v_res",
+            ]
+
+        for name in cache_names:
+            tensor = getattr(self, name, None)
+            if tensor is not None and tensor.device != device:
+                setattr(self, name, self._materialize_cache_tensor(tensor, device))
+
 
     def _store_compressed_cache(
         self,
@@ -287,16 +316,22 @@ class Attention(nn.Module):
         # Avoids cpu().tolist(), cpu().numpy(), Python tuple lists, and
         # per-block host round-trips.
         # ------------------------------------------------------------------
-        if hasattr(compressor, "decompress_chunk_tensor_direct"):
+        if (
+            hasattr(compressor, "decompress_chunk_tensor_direct")
+            and target_device.type == "cuda"
+            and c_bstring.device.type == "cuda"
+            and c_qjl.device.type == "cuda"
+            and c_orig.device.type == "cuda"
+            and c_res.device.type == "cuda"
+        ):
             b_bytes = (int(compressor.bit_width) * int(compressor.block_size) + 7) // 8
             q_bytes = (int(compressor.block_size) + 7) // 8
-            total_blocks = bsz * cache_len * self.n_local_kv_heads
 
             # Slice, flatten, and bulk-move to GPU in one go (cache may be on CPU)
-            b_flat = c_bstring[:bsz, :cache_len].contiguous().reshape(-1, b_bytes).to(target_device)
-            q_flat = c_qjl[:bsz, :cache_len].contiguous().reshape(-1, q_bytes).to(target_device)
-            r_flat = c_res[:bsz, :cache_len].contiguous().reshape(-1).to(target_device)
-            o_flat = c_orig[:bsz, :cache_len].contiguous().reshape(-1).to(target_device)
+            b_flat = c_bstring[:bsz, :cache_len].contiguous().reshape(-1, b_bytes)
+            q_flat = c_qjl[:bsz, :cache_len].contiguous().reshape(-1, q_bytes)
+            r_flat = c_res[:bsz, :cache_len].contiguous().reshape(-1)
+            o_flat = c_orig[:bsz, :cache_len].contiguous().reshape(-1)
 
             output = compressor.decompress_chunk_tensor_direct(b_flat, q_flat, r_flat, o_flat)
             return output.view(bsz, cache_len, self.n_local_kv_heads, compressor.block_size).to(target_dtype)
@@ -344,6 +379,7 @@ class Attention(nn.Module):
             values = xv
             t3 = t2
         elif self.use_compressed_kv_cache:
+            self._ensure_compressed_cache_device(xq.device)
             cache_len = start_pos + seqlen
 
             if self.is_mixed_precision:
