@@ -9,6 +9,7 @@
 # This software may be used and distributed in accordance with the terms of the Llama 3 Community License Agreement.
 
 import math
+import time
 from re import I
 from typing import Any, List, Optional, Tuple
 
@@ -314,15 +315,19 @@ class Attention(nn.Module):
         mask: Optional[torch.Tensor],
     ):
         bsz, seqlen, _ = x.shape
+        t0 = time.perf_counter()
         xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
+        t1 = time.perf_counter()
         xq = xq.view(bsz, seqlen, self.n_local_heads, self.head_dim)
         xk = xk.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
         xv = xv.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
         xq, xk = apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
+        t2 = time.perf_counter()
 
         if getattr(self, "bypass_kv_cache", False):
             keys = xk
             values = xv
+            t3 = t2
         elif self.use_compressed_kv_cache:
             cache_len = start_pos + seqlen
 
@@ -355,6 +360,7 @@ class Attention(nn.Module):
 
                 keys = self._fetch_decompressed_cache(bsz, cache_len, self.kv_cache_compressor, self.cache_k_bstring, self.cache_k_qjl, self.cache_k_orig, self.cache_k_res, xq.device, xq.dtype)
                 values = self._fetch_decompressed_cache(bsz, cache_len, self.kv_cache_compressor, self.cache_v_bstring, self.cache_v_qjl, self.cache_v_orig, self.cache_v_res, xq.device, xq.dtype)
+            t3 = time.perf_counter()
 
         else:
             self.cache_k = self.cache_k.to(xq)
@@ -365,6 +371,7 @@ class Attention(nn.Module):
 
             keys = self.cache_k[:bsz, : start_pos + seqlen]
             values = self.cache_v[:bsz, : start_pos + seqlen]
+            t3 = time.perf_counter()
 
         # repeat k/v heads if n_kv_heads < n_heads
         keys = repeat_kv(keys, self.n_rep)  # (bs, cache_len + seqlen, n_local_heads, head_dim)
@@ -373,16 +380,23 @@ class Attention(nn.Module):
         xq = xq.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
         keys = keys.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
         values = values.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
-
+        t4 = time.perf_counter()
         scores = torch.matmul(xq, keys.transpose(2, 3)) / math.sqrt(self.head_dim)
-
         if mask is not None:
             scores = scores + mask  # (bs, n_local_heads, seqlen, cache_len + seqlen)
-
         scores = F.softmax(scores.float(), dim=-1).type_as(xq)
+        t5 = time.perf_counter()
         output = torch.matmul(scores, values)  # (bs, n_local_heads, seqlen, head_dim)
         output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
-        return self.wo(output)
+        t6 = time.perf_counter()
+        result = self.wo(output)
+        t7 = time.perf_counter()
+        print(f"[ATTN] start_pos={start_pos} seqlen={seqlen} cache_len={start_pos+seqlen} | "
+              f"proj={(t1-t0)*1000:.1f}ms rotary={(t2-t1)*1000:.1f}ms kv={(t3-t2)*1000:.1f}ms "
+              f"attn_matmul={(t5-t4)*1000:.1f}ms attn_softmax={(t5-t4)*1000:.1f}ms "
+              f"out_matmul={(t6-t5)*1000:.1f}ms wo={(t7-t6)*1000:.1f}ms "
+              f"total={(t7-t0)*1000:.1f}ms", flush=True)
+        return result
 
 
 class FeedForward(nn.Module):
@@ -444,8 +458,12 @@ class TransformerBlock(nn.Module):
         freqs_cis: torch.Tensor,
         mask: Optional[torch.Tensor],
     ):
+        t0 = time.perf_counter()
         h = x + self.attention(self.attention_norm(x), start_pos, freqs_cis, mask)
+        t1 = time.perf_counter()
         out = h + self.feed_forward(self.ffn_norm(h))
+        t2 = time.perf_counter()
+        print(f"[BLOCK] layer={self.layer_id} start_pos={start_pos} | attn={(t1-t0)*1000:.1f}ms ffn={(t2-t1)*1000:.1f}ms total={(t2-t0)*1000:.1f}ms", flush=True)
         return out
 
 
@@ -489,6 +507,7 @@ class Transformer(nn.Module):
     @torch.inference_mode()
     def forward(self, tokens: torch.Tensor, start_pos: int):
         _, seqlen = tokens.shape
+        t0 = time.perf_counter()
 
         # Capture the original token device so we can return the logits to the right place
         original_token_device = tokens.device
@@ -509,6 +528,7 @@ class Transformer(nn.Module):
         self.freqs_cis = self.freqs_cis.to(h.device)
         freqs_cis = self.freqs_cis[start_pos : start_pos + seqlen]
 
+        t1 = time.perf_counter()
         mask = None
         if seqlen > 1:
             mask = torch.full((seqlen, seqlen), float("-inf"), device=tokens.device)
@@ -526,15 +546,23 @@ class Transformer(nn.Module):
             # j > cache_len + i, since row i corresponds to token cache_len + i.
             mask = torch.hstack([torch.zeros((seqlen, start_pos), device=tokens.device), mask]).type_as(h)
 
+        t2 = time.perf_counter()
         for layer in self.layers:
             h = layer(h, start_pos, freqs_cis, mask)
+        t3 = time.perf_counter()
         h = self.norm(h)
+        t4 = time.perf_counter()
 
         # 3. OUTPUT PHASE (Dynamic)
         # Move hidden state to wherever the output projection layer lives
         out_device = self.output.weight.device
         h_out = h.to(out_device)
         output = self.output(h_out).float()
+        t5 = time.perf_counter()
+
+        print(f"[TRANSFORMER] start_pos={start_pos} seqlen={seqlen} | "
+              f"embed={(t1-t0)*1000:.1f}ms mask={(t2-t1)*1000:.1f}ms layers={(t3-t2)*1000:.1f}ms "
+              f"norm={(t4-t3)*1000:.1f}ms output={(t5-t4)*1000:.1f}ms total={(t5-t0)*1000:.1f}ms", flush=True)
 
         return output.to(original_token_device)
 
