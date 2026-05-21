@@ -419,7 +419,7 @@ class LlamaGenerator:
                 for i in range(max_gen_len):
                     if i != 0:
                         end_time_t = time.perf_counter()
-                        print(f"[INFO] Token {i - 1} took {start_time_t - end_time_t:.4f}")
+                        print(f"[INFO] Token {i - 1} took {end_time_t - start_time_t:.4f}")
 
                     print(f"[INFO] Token {i} forward...")
                     start_time_t = time.perf_counter()
