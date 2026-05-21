@@ -41,6 +41,7 @@ from .embedder import (
     Embedder,
     OpenAIEmbedder,
     GeminiEmbedder,
+    BGEmbedder
 )
 from .generator import (
     Generator,
@@ -69,4 +70,5 @@ __all__ = [
     "Embedder",
     "OpenAIEmbedder",
     "GeminiEmbedder",
+    "BGEmbedder"
 ]
