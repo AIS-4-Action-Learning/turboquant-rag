@@ -19,8 +19,8 @@ The library wraps a complete RAG pipeline (chunking, embedding, retrieval, gener
 | Gemini embedder / generator (free tier) | ✅ Done |
 | OpenAI embedder / generator (paid) | ✅ Done |
 | PDF extraction script | ✅ Done |
-| BF16 Llama generator / embedder | ⏸ Stub (awaiting framework decision) |
-| TurboQuant Llama generator / embedder | ⏸ Stub (awaiting Hamza's kernel integration) |
+| BF16 Llama generator | ⏸ Stub (awaiting framework decision) |
+| TurboQuant Llama generator | ⏸ Stub (awaiting Hamza's kernel integration) |
 
 ## Project layout
 
@@ -38,7 +38,7 @@ turboquant-rag/
 └── rag_library/
     ├── __init__.py
     ├── chunker.py        # Chunker class
-    ├── embedder.py       # Embedder ABC + OpenAI/Gemini/Llama implementations
+    ├── embedder.py       # Embedder ABC + OpenAI/Gemini implementations
     ├── generator.py      # Generator ABC + OpenAI/Gemini/Llama implementations
     ├── rag.py            # RAG orchestrator (the public face)
     └── vector_store.py   # FAISS index wrapper
@@ -218,27 +218,11 @@ rag = RAG(
 # ... same workflow as Gemini
 ```
 
-### Research benchmark — BF16 Llama 3.1 baseline (when implemented)
+### Llama generators (BF16 or TurboQuant)
 
-```python
-from rag_library import RAG, BF16LlamaGenerator, BF16LlamaEmbedder
-
-rag = RAG(
-    embedder=BF16LlamaEmbedder(model_path="meta-llama/Llama-3.1-8B"),
-    generator=BF16LlamaGenerator(model_path="meta-llama/Llama-3.1-8B"),
-)
-```
-
-### Research benchmark — TurboQuant-compressed Llama 3.1 (when implemented)
-
-```python
-from rag_library import RAG, TurboQuantLlamaGenerator, TurboQuantLlamaEmbedder
-
-rag = RAG(
-    embedder=TurboQuantLlamaEmbedder(model_path="...", bit_width=3),
-    generator=TurboQuantLlamaGenerator(model_path="...", bit_width=3),
-)
-```
+Llama-based generators can still be used for answering, but retrieval should
+use a pretrained embedder (Gemini or OpenAI). Build the index with a
+pretrained embedder and swap only the generator.
 
 In every case, the rest of the pipeline (`build_index`, `query`, `save`, `load`) is identical.
 

@@ -2,20 +2,17 @@
 Embedder interface and implementations.
 
 An Embedder turns text into vectors. Like Generator, this is swappable so
-we can compare OpenAI, Gemini, and Llama-based embeddings in our research.
+we can compare OpenAI and Gemini embeddings in our research.
 
 Class hierarchy:
     Embedder (ABC)
     ├── OpenAIEmbedder
-    ├── GeminiEmbedder
-    └── Llama3Embedder           ── uses LlamaEmbedder from app.llama_models
+    └── GeminiEmbedder
 """
 
 import time
 from abc import ABC, abstractmethod
 from typing import List
-from app.llama_models import LlamaBF16, LlamaCompressed, LlamaEmbedder
-import torch
 
 # ---------------------------------------------------------------------------
 # Public abstract base class
@@ -168,58 +165,3 @@ class GeminiEmbedder(Embedder):
         return embeddings
 
 
-# ---------------------------------------------------------------------------
-# Llama 3.1 embedder (works with both BF16 and TurboQuant models)
-# ---------------------------------------------------------------------------
-
-class Llama3Embedder(Embedder):
-    """Embedder using Llama 3.1 8B via the shared LlamaEmbedder helper.
-
-    Works with both LlamaBF16 and LlamaCompressed model wrappers.
-    Handles batched inference by left-padding sequences to the same length
-    within each micro-batch and passing a single (bsz, seqlen) tensor to
-    the underlying Transformer.get_embeddings method.
-    """
-
-    def __init__(
-        self,
-        model: LlamaBF16 | LlamaCompressed,
-        batch_size: int = 1,
-    ):
-        self.model = model
-        self.batch_size = batch_size
-        self._llama_embedder = LlamaEmbedder()
-
-    def embed(self, texts: List[str]) -> List[List[float]]:
-        if not texts:
-            return []
-
-        # Tokenize everything first so we can batch by padded length
-        encoded: List[List[int]] = []
-        for text in texts:
-            tokens = self.model.tokenizer.encode(text, bos=True, eos=False)
-            encoded.append(tokens)
-
-        embeddings: List[List[float]] = []
-
-        for i in range(0, len(texts), self.batch_size):
-            batch_tokens = encoded[i : i + self.batch_size]
-            max_len = max(len(t) for t in batch_tokens)
-
-            # Left-pad with 0 so the last real token is always at position -1.
-            # get_embeddings returns h[:, -1, :], so the right-most token matters.
-            padded: List[List[int]] = []
-            for t in batch_tokens:
-                padded.append([0] * (max_len - len(t)) + t)
-
-            batch_tensor = torch.tensor(
-                padded,
-                dtype=torch.long,
-                device=self.model.device,
-            )
-
-            # LlamaEmbedder returns (bsz, dim) and already L2-normalizes
-            emb = self._llama_embedder.embed_token_tensor(self.model, batch_tensor)
-            embeddings.extend(emb.cpu().float().tolist())
-
-        return embeddings

@@ -46,8 +46,7 @@ class RAG:
     ):
         """
         Args:
-            embedder: An Embedder instance (OpenAIEmbedder, BF16LlamaEmbedder,
-                      TurboQuantLlamaEmbedder, etc.).
+            embedder: An Embedder instance (OpenAIEmbedder, GeminiEmbedder, etc.).
             generator: A Generator instance.
             chunker: Optional Chunker. If None, a default Chunker is created
                      with chunk_size=600 and overlap=150 (matching the

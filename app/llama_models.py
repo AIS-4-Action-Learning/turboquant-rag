@@ -86,7 +86,6 @@ class Llama:
 
 
         except Exception as e:
-            print(e)
             tr.print_exc()
 
     def input_encoding(self, input_seq : str):
@@ -98,8 +97,7 @@ class Llama:
           tokens_tensor = tokens_tensor.to(self.device).unsqueeze(0)
 
           return tokens, tokens_tensor
-      except Exception as e:
-        print(f"CUDA Error in encoding: {e}")
+      except Exception:
         import traceback as tr
         tr.print_exc()
         return [], torch.empty(0)
@@ -154,31 +152,23 @@ class LlamaBF16(Llama):
 
         # 4. Stream the model to GPU safely (Layer by Layer with CPU Offloading)
         if device == "cuda":
-            print("Streaming model to VRAM (Offloading Embeddings & Output to CPU)...")
-
             # Keep Embeddings on CPU (bfloat16)
             self.model.tok_embeddings = self.model.tok_embeddings.to(device="cpu", dtype=torch.bfloat16)
 
             # Move the 32 Transformer blocks to CUDA
             for i, layer in enumerate(self.model.layers):
                 self.model.layers[i] = layer.to(device="cuda", dtype=torch.bfloat16)
-                # FIX 2: Added safety check
                 if device == "cuda":
                     torch.cuda.empty_cache()
 
-            # FIX 3: Replaced "cuda" with dynamic device variable
             self.model.norm = self.model.norm.to(device=device, dtype=torch.bfloat16)
 
-            # --- THE FIX: Move Output BACK to CUDA ---
-            # Keep Output on GPU to prevent CPU bfloat16 GEMM upcast crashes
+            # Keep Output on CPU to prevent CPU bfloat16 GEMM upcast crashes
             self.model.output = self.model.output.to(device="cpu", dtype=torch.bfloat16)
-            # -----------------------------------------
 
             # Catch the precomputed rotary embeddings
             if device == "cuda":
                 self.model.freqs_cis = self.model.freqs_cis.to(device="cuda")
-
-            print("✅ Successfully squeezed model! (Saved VRAM via Offloading)")
 
         self.model.eval()
 
@@ -351,8 +341,6 @@ class LlamaCompressed(Llama):
 
         # 4. Stream the model to device safely (Layer by Layer with Offloading)
         if device == "cuda":
-            print("Streaming model to VRAM (Offloading Embeddings & Output to CPU)...")
-
             # Keep Embeddings on CPU (bfloat16)
             self.model.tok_embeddings = self.model.tok_embeddings.to(device="cpu", dtype=torch.bfloat16)
 
@@ -373,8 +361,6 @@ class LlamaCompressed(Llama):
             if device == "cuda":
                 self.model.freqs_cis = self.model.freqs_cis.to(device="cuda")
 
-            print("✅ Successfully squeezed model! (Saved VRAM via Offloading)")
-
         self.model.eval()
 
 class LlamaGenerator:
@@ -385,19 +371,13 @@ class LlamaGenerator:
         try:
             generated_token = []
             import torch
-            import time
 
-            print("[INFO] Starting generation...")
             with torch.no_grad():
                 current_pos = 0
                 seq_len = tensor_tokens.shape[1]
 
                 # Warmup loop for compressed KV cache
                 if seq_len > 1:
-                    start_time = time.perf_counter()
-                    print("[INFO] Passing all prompt tokens up to the second-to last one...")
-
-                    # Pass ALL prompt tokens up to the second-to-last one simultaneously
                     prefill_prompt = tensor_tokens[:, :-1].contiguous()
                     _ = llama.model.forward(prefill_prompt, start_pos=0)
                     current_pos = seq_len - 1
@@ -405,27 +385,10 @@ class LlamaGenerator:
                     if llama.device == "cuda":
                         torch.cuda.synchronize()
 
-                    end_time = time.perf_counter()
-                    print(f"[INFO] Prefill phase total time: {end_time - start_time:.4f} seconds")
-
-                print("[INFO] Getting last token...")
                 current_token = tensor_tokens[:, -1:].contiguous()
 
-                start_time = time.perf_counter()
-                print("[INFO] Entering autoregressive loop...")
-
-                start_time_t = time.perf_counter()
-
                 for i in range(max_gen_len):
-                    if i != 0:
-                        end_time_t = time.perf_counter()
-                        print(f"[INFO] Token {i - 1} took {end_time_t - start_time_t:.4f}")
-
-                    print(f"[INFO] Token {i} forward...")
-                    start_time_t = time.perf_counter()
-
                     logits = llama.model.forward(current_token, current_pos)
-
 
                     next_token = torch.argmax(logits[:, -1], dim=-1)
 
@@ -437,36 +400,17 @@ class LlamaGenerator:
                     current_token = next_token.unsqueeze(0)
                     current_pos += logits.shape[1]
 
-                end_time = time.perf_counter()
-                print(f"[INFO] Autoregression took {end_time - start_time:.4} seconds")
-
             response = llama.tokenizer.decode(generated_token)
             for tok in ("<|eot_id|>", "<|eos_id|>", "<|end_of_text|>",
-                    "<|start_header_id|>", "<|end_header_id|>"):
+                    "  Special", "  Token"):
                 response = response.replace(tok, "")
 
             return response.strip()
-        except Exception as e:
+        except Exception:
             import traceback
             traceback.print_exc()
-            print(e)
             return ""
 
-
-class LlamaEmbedder:
-    def embed_token_tensor(self, embedder: LlamaBF16 | LlamaCompressed,
-                           token_tensors: torch.Tensor
-                           ) -> torch.Tensor:
-        try:
-            embedded_tensor = embedder.model.get_embeddings(token_tensors)
-            if embedded_tensor.abs().max().item() < 1e-12:
-                raise RuntimeError("get_embeddings returned all zeros")
-            return embedded_tensor
-        except Exception as e:
-            print(f"[LlamaEmbedder] error: {e}")
-            bsz = token_tensors.shape[0]
-            dim = embedder.params.get("dim", 4096)
-            return torch.zeros((bsz, dim), dtype=torch.float32, device=token_tensors.device)
 
 
 def format_prompt(prompt: str, context: str, sysprompt: str) -> str:
