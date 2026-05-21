@@ -324,7 +324,7 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
     Uses batch context with multiple CUDA streams.
     """
     
-    def __init__(self, lib_path: str, context_path: str, block_size: int, bit_width: int, n_streams: int = 8):
+    def __init__(self, lib_path: str, context_path: str, block_size: int, bit_width: int, n_streams: int = 16):
         self.n_streams = n_streams
         self._batch_ctx = None
         self._libc = None
