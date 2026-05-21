@@ -281,9 +281,8 @@ class BF16LlamaGenerator(_LlamaGeneratorBase, Generator):
 
     def generate(self, query: str, context: str, omit_sysprompt: bool) -> str:
         formatted_prompt = self._format_prompt(query, context, omit_sysprompt)
-        prompt_tokens, prompt_tensors = self.llama.input_encoding(formatted_prompt)
-        prompt_len = len(prompt_tokens)
-        gen_limit = max(0, self.max_tokens - prompt_len)
+        _, prompt_tensors = self.llama.input_encoding(formatted_prompt)
+        gen_limit = self.max_tokens
 
         response = self.llama_generator.generate(prompt_tensors, self.llama, gen_limit)
 
@@ -323,9 +322,8 @@ class TurboQuantLlamaGenerator(_LlamaGeneratorBase, Generator):
 
     def generate(self, query: str, context: str, omit_sysprompt: bool) -> str:
         formatted_prompt = self._format_prompt(query, context, omit_sysprompt)
-        prompt_tokens, prompt_tensors = self.llama.input_encoding(formatted_prompt)
-        prompt_len = len(prompt_tokens)
-        gen_limit = max(0, self.max_tokens - prompt_len)
+        _, prompt_tensors = self.llama.input_encoding(formatted_prompt)
+        gen_limit = self.max_tokens
 
         response = self.llama_generator.generate(prompt_tensors, self.llama, gen_limit)
 
