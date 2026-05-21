@@ -91,6 +91,16 @@ echo "Installation complete!" [cite: 5]
 echo "Summary of artifacts found in $ARTIFACTS_DIR:"
 ls -R "$ARTIFACTS_DIR"
 
-echo ""
-echo "Next steps:"
-echo "  1. Run: python -m scripts.initialize_context" [cite: 5]
+echo "Installing Python Dependencies..."
+which uv
+if [ "$?" -eq 0 ]; then
+    # If ran locally
+    uv venv
+    source .venv/bin/activate
+    uv pip install -r requirements.txt
+    uv pip install -U FlagEmbedding
+else
+    # If ran on Google Colab
+    pip install -r requirements.txt
+    pip install -U FlagEmbedding
+fi
