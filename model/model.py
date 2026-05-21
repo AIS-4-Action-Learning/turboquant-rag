@@ -256,6 +256,32 @@ class Attention(nn.Module):
     ) -> None:
         """Vectorized storage: Uses bulk conversion to avoid Python loops."""
         tensor = tensor.float().contiguous()
+        end_pos = start_pos + seqlen
+
+        if (
+            hasattr(compressor, "compress_chunk_tensor_direct")
+            and tensor.device.type == "cuda"
+            and c_bstring.device.type == "cuda"
+            and c_qjl.device.type == "cuda"
+            and c_orig.device.type == "cuda"
+            and c_res.device.type == "cuda"
+        ):
+            b_tensor, q_tensor, orig_l2, res_l2 = compressor.compress_chunk_tensor_direct(
+                tensor.view(-1, compressor.block_size)
+            )
+            c_bstring[:bsz, start_pos:end_pos] = b_tensor.view(
+                bsz, seqlen, self.n_local_kv_heads, 1, -1
+            )
+            c_qjl[:bsz, start_pos:end_pos] = q_tensor.view(
+                bsz, seqlen, self.n_local_kv_heads, 1, -1
+            )
+            c_orig[:bsz, start_pos:end_pos] = orig_l2.view(
+                bsz, seqlen, self.n_local_kv_heads, 1
+            )
+            c_res[:bsz, start_pos:end_pos] = res_l2.view(
+                bsz, seqlen, self.n_local_kv_heads, 1
+            )
+            return
 
         # Flatten input tensor for compression
         blocks = list(torch.unbind(tensor.view(-1, compressor.block_size), dim=0))
@@ -292,7 +318,6 @@ class Attention(nn.Module):
         )
 
         # Batch assignment to the cache slices
-        end_pos = start_pos + seqlen
         c_bstring[:bsz, start_pos:end_pos] = b_tensor.to(c_bstring.device)
         c_qjl[:bsz, start_pos:end_pos] = q_tensor.to(c_qjl.device)
         c_orig[:bsz, start_pos:end_pos] = orig_l2.to(c_orig.device)

@@ -396,6 +396,16 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
             ctypes.c_uint32,
         ]
         lib.turboquant_prod_quantization_batch.restype = ctypes.c_uint8
+
+        lib.turboquant_prod_quantization_batch_direct.argtypes = [
+            ctypes.POINTER(TurboQuantBatchContext),
+            ctypes.c_void_p,  # d_inputs
+            ctypes.c_void_p,  # d_bstrings
+            ctypes.c_void_p,  # d_qjls
+            ctypes.c_void_p,  # d_residual_l2s
+            ctypes.c_uint32,  # batch_size
+        ]
+        lib.turboquant_prod_quantization_batch_direct.restype = ctypes.c_uint8
         
         lib.turboquant_prod_dequantization_batch.argtypes = [
             ctypes.POINTER(TurboQuantBatchContext),
@@ -441,6 +451,62 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
         """Single block - delegates to batch with size 1."""
         results = self.compress_chunk([block])
         return results[0]
+
+    def compress_chunk_tensor_direct(
+        self,
+        blocks: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Direct GPU batch quantization for a contiguous `(N, block_size)` tensor.
+
+        Returns:
+            bstrings: `(N, b_bytes)` uint8 tensor on CUDA
+            qjls: `(N, q_bytes)` uint8 tensor on CUDA
+            original_l2s: `(N,)` float32 tensor on CUDA
+            residual_l2s: `(N,)` float32 tensor on CUDA
+        """
+        if blocks.ndim != 2 or blocks.shape[1] != self.block_size:
+            raise ValueError(f"Expected blocks shaped (N, {self.block_size}), got {tuple(blocks.shape)}")
+
+        if not blocks.is_cuda:
+            blocks = blocks.to("cuda")
+
+        blocks_f32 = blocks.detach().to(dtype=torch.float32).contiguous()
+        batch_size = blocks_f32.shape[0]
+        b_bytes = (self.bit_width * self.block_size + 7) // 8
+        q_bytes = (self.block_size + 7) // 8
+
+        bstrings = torch.zeros((batch_size, b_bytes), dtype=torch.uint8, device=blocks_f32.device)
+        qjls = torch.zeros((batch_size, q_bytes), dtype=torch.uint8, device=blocks_f32.device)
+        original_l2s = torch.linalg.norm(blocks_f32, dim=1)
+        residual_l2s = torch.zeros(batch_size, dtype=torch.float32, device=blocks_f32.device)
+
+        active_indices = (original_l2s >= 1e-12).nonzero(as_tuple=False).flatten()
+        if active_indices.numel() == 0:
+            return bstrings, qjls, original_l2s, residual_l2s
+
+        active_blocks = blocks_f32.index_select(0, active_indices).contiguous()
+        active_count = active_blocks.shape[0]
+        active_bstrings = torch.empty((active_count, b_bytes), dtype=torch.uint8, device=blocks_f32.device)
+        active_qjls = torch.empty((active_count, q_bytes), dtype=torch.uint8, device=blocks_f32.device)
+        active_residual_l2s = torch.empty(active_count, dtype=torch.float32, device=blocks_f32.device)
+
+        status = self._lib.turboquant_prod_quantization_batch_direct(
+            self._batch_ctx,
+            ctypes.c_void_p(active_blocks.data_ptr()),
+            ctypes.c_void_p(active_bstrings.data_ptr()),
+            ctypes.c_void_p(active_qjls.data_ptr()),
+            ctypes.c_void_p(active_residual_l2s.data_ptr()),
+            ctypes.c_uint32(active_count),
+        )
+        if status != 0:
+            raise RuntimeError(f"turboquant_prod_quantization_batch_direct failed with code {status}")
+
+        bstrings.index_copy_(0, active_indices, active_bstrings)
+        qjls.index_copy_(0, active_indices, active_qjls)
+        residual_l2s.index_copy_(0, active_indices, active_residual_l2s)
+
+        return bstrings, qjls, original_l2s, residual_l2s
 
 
     def compress_chunk(self, blocks: List[torch.Tensor]) -> List[Tuple[float, float, bytes, bytes]]:
