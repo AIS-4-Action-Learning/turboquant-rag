@@ -471,7 +471,7 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
         if not blocks.is_cuda:
             blocks = blocks.to("cuda")
 
-        blocks_f32 = blocks.detach().to(dtype=torch.float32).contiguous()
+        blocks_f32 = blocks.detach().to(dtype=torch.bfloat16).float().contiguous()
         batch_size = blocks_f32.shape[0]
         b_bytes = (self.bit_width * self.block_size + 7) // 8
         q_bytes = (self.block_size + 7) // 8

@@ -178,6 +178,7 @@ class Attention(nn.Module):
         self.cache_v_qjl = None
         self.cache_v_original_l2 = None
         self.cache_v_residual_l2 = None
+        self.decode_cache_until = 0
 
         if self.use_compressed_kv_cache:
             if self.is_mixed_precision:
@@ -240,6 +241,85 @@ class Attention(nn.Module):
             tensor = getattr(self, name, None)
             if tensor is not None and tensor.device != device:
                 setattr(self, name, self._materialize_cache_tensor(tensor, device))
+
+    def _compressed_cache_template(self) -> torch.Tensor:
+        if self.is_mixed_precision:
+            return self.cache_k_bstring_outlier
+        return self.cache_k_bstring
+
+    def _ensure_decode_cache_device(self, device: torch.device, dtype: torch.dtype) -> None:
+        template = self._compressed_cache_template()
+        shape = (template.shape[0], template.shape[1], template.shape[2], self.head_dim)
+        reset_cache = (
+            self.cache_k is None or
+            self.cache_v is None or
+            self.cache_k.device != device or
+            self.cache_v.device != device or
+            self.cache_k.dtype != dtype or
+            self.cache_v.dtype != dtype or
+            tuple(self.cache_k.shape) != shape or
+            tuple(self.cache_v.shape) != shape
+        )
+
+        if reset_cache:
+            self.cache_k = torch.zeros(shape, dtype=dtype, device=device)
+            self.cache_v = torch.zeros(shape, dtype=dtype, device=device)
+            self.decode_cache_until = 0
+
+    def _bootstrap_decode_cache(
+        self,
+        bsz: int,
+        cache_len: int,
+        target_device: torch.device,
+        target_dtype: torch.dtype,
+    ) -> None:
+        if cache_len <= 0 or self.decode_cache_until >= cache_len:
+            return
+
+        self._ensure_decode_cache_device(target_device, target_dtype)
+
+        if self.is_mixed_precision:
+            k_out = self._fetch_decompressed_cache(
+                bsz, cache_len, self.outlier_compressor,
+                self.cache_k_bstring_outlier, self.cache_k_qjl_outlier,
+                self.cache_k_orig_outlier, self.cache_k_res_outlier,
+                target_device, target_dtype,
+            )
+            k_norm = self._fetch_decompressed_cache(
+                bsz, cache_len, self.normal_compressor,
+                self.cache_k_bstring_normal, self.cache_k_qjl_normal,
+                self.cache_k_orig_normal, self.cache_k_res_normal,
+                target_device, target_dtype,
+            )
+            v_out = self._fetch_decompressed_cache(
+                bsz, cache_len, self.outlier_compressor,
+                self.cache_v_bstring_outlier, self.cache_v_qjl_outlier,
+                self.cache_v_orig_outlier, self.cache_v_res_outlier,
+                target_device, target_dtype,
+            )
+            v_norm = self._fetch_decompressed_cache(
+                bsz, cache_len, self.normal_compressor,
+                self.cache_v_bstring_normal, self.cache_v_qjl_normal,
+                self.cache_v_orig_normal, self.cache_v_res_normal,
+                target_device, target_dtype,
+            )
+            self.cache_k[:bsz, :cache_len] = torch.cat([k_out, k_norm], dim=-1)
+            self.cache_v[:bsz, :cache_len] = torch.cat([v_out, v_norm], dim=-1)
+        else:
+            self.cache_k[:bsz, :cache_len] = self._fetch_decompressed_cache(
+                bsz, cache_len, self.kv_cache_compressor,
+                self.cache_k_bstring, self.cache_k_qjl,
+                self.cache_k_orig, self.cache_k_res,
+                target_device, target_dtype,
+            )
+            self.cache_v[:bsz, :cache_len] = self._fetch_decompressed_cache(
+                bsz, cache_len, self.kv_cache_compressor,
+                self.cache_v_bstring, self.cache_v_qjl,
+                self.cache_v_orig, self.cache_v_res,
+                target_device, target_dtype,
+            )
+
+        self.decode_cache_until = cache_len
 
 
     def _store_compressed_cache(
@@ -406,6 +486,7 @@ class Attention(nn.Module):
         elif self.use_compressed_kv_cache:
             self._ensure_compressed_cache_device(xq.device)
             cache_len = start_pos + seqlen
+            self._ensure_decode_cache_device(xq.device, xq.dtype)
 
             if self.is_mixed_precision:
                 # 1. Split Keys and Values by dimensions
@@ -419,30 +500,36 @@ class Attention(nn.Module):
                 self._store_compressed_cache(xk_norm, bsz, seqlen, start_pos, self.normal_compressor, self.cache_k_bstring_normal, self.cache_k_qjl_normal, self.cache_k_orig_normal, self.cache_k_res_normal)
                 self._store_compressed_cache(xv_out, bsz, seqlen, start_pos, self.outlier_compressor, self.cache_v_bstring_outlier, self.cache_v_qjl_outlier, self.cache_v_orig_outlier, self.cache_v_res_outlier)
                 self._store_compressed_cache(xv_norm, bsz, seqlen, start_pos, self.normal_compressor, self.cache_v_bstring_normal, self.cache_v_qjl_normal, self.cache_v_orig_normal, self.cache_v_res_normal)
+                if start_pos > 0 and self.decode_cache_until < start_pos:
+                    self._bootstrap_decode_cache(bsz, start_pos, xq.device, xq.dtype)
+                self.cache_k[:bsz, start_pos:cache_len] = xk
+                self.cache_v[:bsz, start_pos:cache_len] = xv
+                self.decode_cache_until = max(self.decode_cache_until, cache_len)
 
                 # 3. For initial prefill (start_pos==0), use fresh keys/values directly
-                #    to skip expensive decompression and avoid quantization error.
+                #    for attention while also populating the dense decode shadow cache.
                 if start_pos == 0:
                     keys = xk
                     values = xv
                 else:
-                    k_out = self._fetch_decompressed_cache(bsz, cache_len, self.outlier_compressor, self.cache_k_bstring_outlier, self.cache_k_qjl_outlier, self.cache_k_orig_outlier, self.cache_k_res_outlier, xq.device, xq.dtype)
-                    k_norm = self._fetch_decompressed_cache(bsz, cache_len, self.normal_compressor, self.cache_k_bstring_normal, self.cache_k_qjl_normal, self.cache_k_orig_normal, self.cache_k_res_normal, xq.device, xq.dtype)
-                    v_out = self._fetch_decompressed_cache(bsz, cache_len, self.outlier_compressor, self.cache_v_bstring_outlier, self.cache_v_qjl_outlier, self.cache_v_orig_outlier, self.cache_v_res_outlier, xq.device, xq.dtype)
-                    v_norm = self._fetch_decompressed_cache(bsz, cache_len, self.normal_compressor, self.cache_v_bstring_normal, self.cache_v_qjl_normal, self.cache_v_orig_normal, self.cache_v_res_normal, xq.device, xq.dtype)
-                    keys = torch.cat([k_out, k_norm], dim=-1)
-                    values = torch.cat([v_out, v_norm], dim=-1)
+                    keys = self.cache_k[:bsz, :cache_len]
+                    values = self.cache_v[:bsz, :cache_len]
 
             else:
                 self._store_compressed_cache(xk, bsz, seqlen, start_pos, self.kv_cache_compressor, self.cache_k_bstring, self.cache_k_qjl, self.cache_k_orig, self.cache_k_res)
                 self._store_compressed_cache(xv, bsz, seqlen, start_pos, self.kv_cache_compressor, self.cache_v_bstring, self.cache_v_qjl, self.cache_v_orig, self.cache_v_res)
+                if start_pos > 0 and self.decode_cache_until < start_pos:
+                    self._bootstrap_decode_cache(bsz, start_pos, xq.device, xq.dtype)
+                self.cache_k[:bsz, start_pos:cache_len] = xk
+                self.cache_v[:bsz, start_pos:cache_len] = xv
+                self.decode_cache_until = max(self.decode_cache_until, cache_len)
 
                 if start_pos == 0:
                     keys = xk
                     values = xv
                 else:
-                    keys = self._fetch_decompressed_cache(bsz, cache_len, self.kv_cache_compressor, self.cache_k_bstring, self.cache_k_qjl, self.cache_k_orig, self.cache_k_res, xq.device, xq.dtype)
-                    values = self._fetch_decompressed_cache(bsz, cache_len, self.kv_cache_compressor, self.cache_v_bstring, self.cache_v_qjl, self.cache_v_orig, self.cache_v_res, xq.device, xq.dtype)
+                    keys = self.cache_k[:bsz, :cache_len]
+                    values = self.cache_v[:bsz, :cache_len]
             t3 = time.perf_counter()
 
         else:
