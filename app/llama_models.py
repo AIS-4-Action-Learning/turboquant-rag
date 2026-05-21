@@ -406,7 +406,7 @@ class LlamaGenerator:
                         torch.cuda.synchronize()
 
                     end_time = time.perf_counter()
-                    print(f"[INFO] Prefill phase total time: {end_time - start_time:4.f} seconds")
+                    print(f"[INFO] Prefill phase total time: {end_time - start_time:.4f} seconds")
 
                 print("[INFO] Getting last token...")
                 current_token = tensor_tokens[:, -1:].contiguous()
@@ -419,7 +419,7 @@ class LlamaGenerator:
                 for i in range(max_gen_len):
                     if i != 0:
                         end_time_t = time.perf_counter()
-                        print(f"[INFO] Token {i - 1} took {start_time_t - end_time_t:4.f}")
+                        print(f"[INFO] Token {i - 1} took {start_time_t - end_time_t:.4f}")
 
                     print(f"[INFO] Token {i} forward...")
                     start_time_t = time.perf_counter()
