@@ -172,7 +172,7 @@ class BGEmbedder(Embedder):
 
         self.model = BGEM3FlagModel(
             'BAAI/bge-m3',
-            use_fp16=True,
+            use_fp16=False,
             device='cpu'
         )
 
@@ -183,7 +183,7 @@ class BGEmbedder(Embedder):
         try:
             output = self.model.encode(texts,
                               self.batch_size,
-                              self.embedding_dim
+                              max_length=self.embedding_dim
                               )
 
             dense_embeddings = cast(np.ndarray, output['dense_vecs'])
