@@ -13,7 +13,7 @@ Class hierarchy:
 import time
 from abc import ABC, abstractmethod
 from typing import List, cast
-from FlagEmbedding import BGEM3FlagModel
+from FlagEmbedding import FlagModel
 import numpy as np
 
 # ---------------------------------------------------------------------------
@@ -168,25 +168,23 @@ class GeminiEmbedder(Embedder):
 
 
 class BGEmbedder(Embedder):
-    def __init__(self, batch_size: int = 12, embedding_dim: int = 1024):
+    def __init__(self, batch_size: int = 12):
 
-        self.model = BGEM3FlagModel(
-            'BAAI/bge-m3',
+        self.model = FlagModel(
+            'BAAI/bge-small-en-v1.5',
             use_fp16=False,
             device='cpu'
         )
 
         self.batch_size = batch_size
-        self.embedding_dim = embedding_dim
 
     def embed(self, texts: List[str]) -> List[List[float]]:
         try:
-            output = self.model.encode(texts,
-                              self.batch_size,
-                              max_length=self.embedding_dim
-                              )
+            dense_embeddings = self.model.encode(
+                texts,
+                self.batch_size,
+            )
 
-            dense_embeddings = cast(np.ndarray, output['dense_vecs'])
 
             return dense_embeddings.tolist()
         except Exception as e:
