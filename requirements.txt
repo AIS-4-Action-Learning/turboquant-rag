@@ -24,6 +24,14 @@ torch>=2.0.0
 fairscale>=0.4.13
 tiktoken>=0.12.0
 
+# Core ML dependencies
+torchvision
+FlagEmbedding>=1.2.0
+
+# Pinning NumPy to avoid the 2.0.0 incompatibility we encountered
 numpy==1.26.4
 
-torchvision==0.27.0
+# Utility/Math libraries
+scipy
+scikit-learn
+transformers
