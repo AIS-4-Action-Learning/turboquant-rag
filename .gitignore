@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+NEW_FEATURE.md
+NEW_FEATURE.pdf
+PROJECT_DESCRIPTION.md
+ToDo.md
+USER_MANUAL.md
+USER_MANUAL.pdf
+debug/
