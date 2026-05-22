@@ -99,8 +99,14 @@ if [ "$?" -eq 0 ]; then
     source .venv/bin/activate
     uv pip uninstall -y numpy torch torchvision
     uv pip install --force-reinstall -r requirements.txt
+    echo "================================================="
+    echo "[INFO] - IF ON GOOGLE COLAB RESTART YOUR SESSION"
+    echo "================================================="
 else
     # If ran on Google Colab
     pip uninstall -y numpy torch torchvision
     pip install --force-reinstall -r requirements.txt
+    echo "================================================="
+    echo "[INFO] - IF ON GOOGLE COLAB RESTART YOUR SESSION"
+    echo "================================================="
 fi
