@@ -179,7 +179,8 @@ class LlamaCompressed(Llama):
                  device : str = "cuda",
                  is_batch : bool = True,
                  bit_width : float = DEFAULT_BIT_WIDTH,
-                 dims : int = DEFAULT_DIMENSIONS):
+                 dims : int = DEFAULT_DIMENSIONS,
+                 decode_window_size: int = 512):
         # Setup fairscale for single-process usage
         _setup_single_process_distributed(device)
 
@@ -187,14 +188,19 @@ class LlamaCompressed(Llama):
 
         self.bit_width = bit_width
         self.dims = dims
+        self.decode_window_size = max_seq_length if decode_window_size <= 0 else min(int(decode_window_size), max_seq_length)
 
         # Initialize model arguments (hyperparams, context window, and batch size)
         self.model_args = ModelArgs(
             **self.params,
             max_seq_len=max_seq_length,
             max_batch_size=batch_size,
-            use_compressed_kv_cache=True
+            use_compressed_kv_cache=True,
         )
+        try:
+            setattr(self.model_args, "decode_window_size", self.decode_window_size)
+        except Exception:
+            pass
 
         # Use default context path if not set, looking in artifacts folder
         # context_path = CONTEXT_PATH

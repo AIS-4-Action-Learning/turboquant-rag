@@ -51,6 +51,7 @@ class ModelArgs:
     max_batch_size: int = 32
     max_seq_len: int = 2048
     use_compressed_kv_cache: bool = False  # Enable TurboQuant KV cache compression
+    decode_window_size: int = -1  # Compressed KV decode window (<=0 means full max_seq_len)
 
     # vision model params
     vision_chunk_size: int = -1  # image resolution for image models
