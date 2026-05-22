@@ -97,8 +97,10 @@ if [ "$?" -eq 0 ]; then
     # If ran locally
     uv venv
     source .venv/bin/activate
-    uv pip install -r requirements.txt
+    uv pip uninstall -y numpy torch torchvision
+    uv pip install --force-reinstall -r requirements.txt
 else
     # If ran on Google Colab
-    pip install -r requirements.txt
+    pip uninstall -y numpy torch torchvision
+    pip install --force-reinstall -r requirements.txt
 fi
