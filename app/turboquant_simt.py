@@ -495,7 +495,7 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
         active_count = active_blocks.shape[0]
         active_bstrings = torch.empty((active_count, b_bytes), dtype=torch.uint8, device=blocks_f32.device)
         active_qjls = torch.empty((active_count, q_bytes), dtype=torch.int8, device=blocks_f32.device)
-        active_residual_l2s = torch.empty(active_count, dtype=torch.int8, device=blocks_f32.device)
+        active_residual_l2s = torch.empty(active_count, dtype=torch.float32, device=blocks_f32.device)
 
         status = self._lib.turboquant_prod_quantization_batch_direct(
             self._batch_ctx,
