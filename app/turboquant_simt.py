@@ -503,9 +503,10 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
             ctypes.c_void_p(active_bstrings.data_ptr()),
             ctypes.c_void_p(active_qjls.data_ptr()),
             ctypes.c_void_p(active_residual_l2s.data_ptr()),
+            ctypes.c_uint32(active_count),
         )
         if status != 0:
-            raise RuntimeError(f"turboquant_prod_dequantization_batch_direct failed with code {status}")
+            raise RuntimeError(f"turboquant_prod_quantization_batch_direct failed with code {status}")
 
         bstrings.index_copy(0, active_indices, active_bstrings)
         qjls.index_copy(0, active_indices, active_qjls)
