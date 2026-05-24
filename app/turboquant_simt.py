@@ -483,7 +483,7 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
         q_bytes = (self.block_size + 7) // 8
 
         bstrings = torch.zeros((batch_size, b_bytes), dtype=torch.uint8, device=blocks_f32.device)
-        qjls = torch.zeros((batch_size, q_bytes), dtype=torch.int8, device=blocks_f32.device)
+        qjls = torch.zeros((batch_size, q_bytes), dtype=torch.uint8, device=blocks_f32.device)
         original_l2s = torch.linalg.norm(blocks_f32, dim=1)
         residual_l2s = torch.zeros(batch_size, dtype=torch.float32, device=blocks_f32.device)
 
@@ -508,9 +508,9 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
         if status != 0:
             raise RuntimeError(f"turboquant_prod_quantization_batch_direct failed with code {status}")
 
-        bstrings.index_copy(0, active_indices, active_bstrings)
-        qjls.index_copy(0, active_indices, active_qjls)
-        residual_l2s.index_copy(0, active_indices, active_residual_l2s)
+        bstrings.index_copy_(0, active_indices, active_bstrings)
+        qjls.index_copy_(0, active_indices, active_qjls)
+        residual_l2s.index_copy_(0, active_indices, active_residual_l2s)
 
         return bstrings, qjls, original_l2s, residual_l2s
 
