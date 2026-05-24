@@ -212,6 +212,36 @@ class Attention(nn.Module):
             torch.zeros(shape, dtype=torch.float32)
         )
 
+    def _materialize_cache_tensor(self, tensor: torch.Tensor, device: torch.device) -> torch.Tensor:
+        if tensor.device == device:
+            return tensor
+        if tensor.device.type == "meta":
+            return torch.zeros(tuple(tensor.shape), dtype=tensor.dtype, device=device)
+
+        return tensor.to(device)
+
+
+    def _ensure_compressed_cache_device(self, device: torch.device) -> None:
+        if not self.use_compressed_kv_cache:
+            return
+
+        if self.is_mixed_precision:
+            cache_names = [
+                "cache_k_bstring_outlier", "cache_k_qjl_outlier", "cache_k_orig_outlier", "cache_k_res_outlier",
+                "cache_v_bstring_outlier", "cache_v_qjl_outlier", "cache_v_orig_outlier", "cache_v_res_outlier",
+                "cache_k_bstring_normal", "cache_k_qjl_normal", "cache_k_orig_normal", "cache_k_res_normal",
+                "cache_v_bstring_normal", "cache_v_qjl_normal", "cache_v_orig_normal", "cache_v_res_normal",
+            ]
+        else:
+            cache_names = [
+                "cache_k_bstring", "cache_k_qjl", "cache_k_orig", "cache_k_res",
+                "cache_v_bstring", "cache_v_qjl", "cache_v_orig", "cache_v_res",
+            ]
+
+        for name in cache_names:
+            tensor = getattr(self, name, None)
+            if tensor is not None and tensor.device != device:
+                setattr(self, name, self._materialize_cache_tensor(tensor, device))
 
     def _store_compressed_cache(
         self,
@@ -228,6 +258,41 @@ class Attention(nn.Module):
         """Vectorized storage: Uses bulk conversion to avoid Python loops."""
         tensor = tensor.float().contiguous()
 
+        # The end position that we are storing to 
+        # For prefill phase : seqlen
+        # For autoregressive phase : start pos + seqlen
+        end_pos = start_pos + seqlen
+
+        # On-Device Zero-Copy Quantization and Storage 
+        if (hasattr(compressor, "compress_chunk_tensor_direct")
+                and tensor.device.type == "cuda"
+                and c_bstring.device.type == "cuda"
+                and c_qjl.device.type == "cuda"
+                and c_orig.device.type == "cuda"
+                and c_res.device.type == "cuda"
+                ):
+            # We resize the tensors from (batch_size, seqlen, n_heads, head_dim) 
+            # to (seqlen * n_heads, block_size ~ 128)
+            b_tensor, q_tensor, orig_l2, res_l2 = compressor.compress_chunk_tensor_direct(
+                tensor.view(-1, compressor.block_size)
+            )
+            # The output of compression is a binary array of shape (batch_size, b_size)
+            # To (bsz ~ 1, seqlen ~ batch_size, n_heads, 1, -1 (which should be the b_size / n_heads)
+            c_bstring[:bsz, start_pos:end_pos] = b_tensor.view(
+                bsz, seqlen, self.n_local_kv_heads, 1, -1
+            )
+            # Same as above
+            c_qjl[:bsz, start_pos:end_pos] = q_tensor.view(
+                bsz, seqlen, self.n_kv_heads, 1, -1
+            )
+            c_orig[:bsz, start_pos:end_pos] = orig_l2.view(
+                bsz, seqlen, self.n_local_kv_heads, 1
+            )
+            c_res[:bsz, start_pos:end_pos] = res_l2.view(
+                bsz, seqlen, self.n_local_kv_heads, 1
+            )
+            return
+
         # Flatten input tensor for compression
         blocks = list(torch.unbind(tensor.view(-1, compressor.block_size), dim=0))
 
@@ -241,7 +306,6 @@ class Attention(nn.Module):
         # Bulk convert bytes into flat buffers using list comprehensions (faster than loops)
         all_bstrings = b"".join([res[2] for res in compressed_results])
         all_qjls = b"".join([res[3] for res in compressed_results])
-
         b_bytes = (int(compressor.bit_width) * int(compressor.block_size) + 7) // 8
         q_bytes = (int(compressor.block_size) + 7) // 8
 
@@ -281,6 +345,26 @@ class Attention(nn.Module):
         target_device: torch.device,
         target_dtype: torch.dtype,
     ) -> torch.Tensor:
+        if (
+            hasattr(compressor, "decompress_chunk_tensor_direct")
+            and target_device.type == "cuda"
+            and c_bstring.device.type == "cuda"
+            and c_qjl.device.type == "cuda"
+            and c_orig.device.type == "cuda"
+            and c_res.device.type == "cuda"
+        ):
+            b_bytes = (int(compressor.bit_width) * int(compressor.block_size) + 7) // 8
+            q_bytes = (int(compressor.block_size) + 7) // 8
+
+            # Slice, flatten, and bulk-move to GPU in one go (cache may be on CPU)
+            b_flat = c_bstring[:bsz, :cache_len].contiguous().reshape(-1, b_bytes)
+            q_flat = c_qjl[:bsz, :cache_len].contiguous().reshape(-1, q_bytes)
+            r_flat = c_res[:bsz, :cache_len].contiguous().reshape(-1)
+            o_flat = c_orig[:bsz, :cache_len].contiguous().reshape(-1)
+
+            output = compressor.decompress_chunk_tensor_direct(b_flat, q_flat, r_flat, o_flat)
+            return output.view(bsz, cache_len, self.n_local_kv_heads, compressor.block_size).to(target_dtype)
+
         """Vectorized fetching: Converts cache slices to C-input in bulk."""
         # 1. Slice and flatten everything to CPU
         o_flat = c_orig[:bsz, :cache_len].reshape(-1).cpu().tolist()
@@ -301,7 +385,6 @@ class Attention(nn.Module):
 
         # 3. Batch Decompress (The C-API Multi-threaded call)
         decompressed_blocks = compressor.decompress_chunk(compressed_blocks)
-
         # 4. Stack and view back to (B, S, H, D)
         stacked = torch.stack(decompressed_blocks, dim=0).to(device=target_device, dtype=target_dtype)
 
@@ -314,46 +397,67 @@ class Attention(nn.Module):
         freqs_cis: torch.Tensor,
         mask: Optional[torch.Tensor],
     ):
+        # Get the number of batches and sequence length
+        # (n_batches, seqlen)
         bsz, seqlen, _ = x.shape
+
+        # Project input x to query, key, and value tensors using tensor-parallel linear layers
         xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
+
+        # We reshape the output (n_batches, seqlen, heads, head_dim)
         xq = xq.view(bsz, seqlen, self.n_local_heads, self.head_dim)
         xk = xk.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
         xv = xv.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
         xq, xk = apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
 
+        # Check if we are using the compressed version of llama
         if self.use_compressed_kv_cache:
+            # Compute the total cache length (start position + current seqlen)
+            # During prefill cache length is just the sequence length
             cache_len = start_pos + seqlen
+
+            # Set all of the quantization results device to "cuda"
+            self._ensure_compressed_cache_device(xq.device)
 
             if self.is_mixed_precision:
                 # 1. Split Keys and Values by dimensions
-                xk_out = xk[..., :self.outlier_dim]
-                xk_norm = xk[..., self.outlier_dim:]
-                xv_out = xv[..., :self.outlier_dim]
-                xv_norm = xv[..., self.outlier_dim:]
+                # outlier_dim is equal to the dim set by compressor (128)
+                xk_out = xk[..., :self.outlier_dim] # outlier key
+                xk_norm = xk[..., self.outlier_dim:] # normal key
+                xv_out = xv[..., :self.outlier_dim] # outlier value
+                xv_norm = xv[..., self.outlier_dim:] # normal value
 
                 # 2. Store independently
+                # Compress xk_out and store its quantization result in k_bstring, k_qjl, k_orig (original L2), and residual L2
                 self._store_compressed_cache(xk_out, bsz, seqlen, start_pos, self.outlier_compressor, self.cache_k_bstring_outlier, self.cache_k_qjl_outlier, self.cache_k_orig_outlier, self.cache_k_res_outlier)
                 self._store_compressed_cache(xk_norm, bsz, seqlen, start_pos, self.normal_compressor, self.cache_k_bstring_normal, self.cache_k_qjl_normal, self.cache_k_orig_normal, self.cache_k_res_normal)
                 self._store_compressed_cache(xv_out, bsz, seqlen, start_pos, self.outlier_compressor, self.cache_v_bstring_outlier, self.cache_v_qjl_outlier, self.cache_v_orig_outlier, self.cache_v_res_outlier)
                 self._store_compressed_cache(xv_norm, bsz, seqlen, start_pos, self.normal_compressor, self.cache_v_bstring_normal, self.cache_v_qjl_normal, self.cache_v_orig_normal, self.cache_v_res_normal)
 
-                # 3. Fetch independently
-                k_out = self._fetch_decompressed_cache(bsz, cache_len, self.outlier_compressor, self.cache_k_bstring_outlier, self.cache_k_qjl_outlier, self.cache_k_orig_outlier, self.cache_k_res_outlier, xq.device, xq.dtype)
-                k_norm = self._fetch_decompressed_cache(bsz, cache_len, self.normal_compressor, self.cache_k_bstring_normal, self.cache_k_qjl_normal, self.cache_k_orig_normal, self.cache_k_res_normal, xq.device, xq.dtype)
-                v_out = self._fetch_decompressed_cache(bsz, cache_len, self.outlier_compressor, self.cache_v_bstring_outlier, self.cache_v_qjl_outlier, self.cache_v_orig_outlier, self.cache_v_res_outlier, xq.device, xq.dtype)
-                v_norm = self._fetch_decompressed_cache(bsz, cache_len, self.normal_compressor, self.cache_v_bstring_normal, self.cache_v_qjl_normal, self.cache_v_orig_normal, self.cache_v_res_normal, xq.device, xq.dtype)
+                if start_pos > 0:
+                    # 3. Fetch independently
+                    k_out = self._fetch_decompressed_cache(bsz, cache_len, self.outlier_compressor, self.cache_k_bstring_outlier, self.cache_k_qjl_outlier, self.cache_k_orig_outlier, self.cache_k_res_outlier, xq.device, xq.dtype)
+                    k_norm = self._fetch_decompressed_cache(bsz, cache_len, self.normal_compressor, self.cache_k_bstring_normal, self.cache_k_qjl_normal, self.cache_k_orig_normal, self.cache_k_res_normal, xq.device, xq.dtype)
+                    v_out = self._fetch_decompressed_cache(bsz, cache_len, self.outlier_compressor, self.cache_v_bstring_outlier, self.cache_v_qjl_outlier, self.cache_v_orig_outlier, self.cache_v_res_outlier, xq.device, xq.dtype)
+                    v_norm = self._fetch_decompressed_cache(bsz, cache_len, self.normal_compressor, self.cache_v_bstring_normal, self.cache_v_qjl_normal, self.cache_v_orig_normal, self.cache_v_res_normal, xq.device, xq.dtype)
 
-                # 4. Concatenate back to 128-dim head
-                keys = torch.cat([k_out, k_norm], dim=-1)
-                values = torch.cat([v_out, v_norm], dim=-1)
+                    # 4. Concatenate back to 128-dim head
+                    keys = torch.cat([k_out, k_norm], dim=-1)
+                    values = torch.cat([v_out, v_norm], dim=-1)
+                elif start_pos == 0:
+                    keys = xk
+                    values = xv
 
             else:
                 self._store_compressed_cache(xk, bsz, seqlen, start_pos, self.kv_cache_compressor, self.cache_k_bstring, self.cache_k_qjl, self.cache_k_orig, self.cache_k_res)
                 self._store_compressed_cache(xv, bsz, seqlen, start_pos, self.kv_cache_compressor, self.cache_v_bstring, self.cache_v_qjl, self.cache_v_orig, self.cache_v_res)
 
-                keys = self._fetch_decompressed_cache(bsz, cache_len, self.kv_cache_compressor, self.cache_k_bstring, self.cache_k_qjl, self.cache_k_orig, self.cache_k_res, xq.device, xq.dtype)
-                values = self._fetch_decompressed_cache(bsz, cache_len, self.kv_cache_compressor, self.cache_v_bstring, self.cache_v_qjl, self.cache_v_orig, self.cache_v_res, xq.device, xq.dtype)
-
+                if start_pos > 0:
+                    keys = self._fetch_decompressed_cache(bsz, cache_len, self.kv_cache_compressor, self.cache_k_bstring, self.cache_k_qjl, self.cache_k_orig, self.cache_k_res, xq.device, xq.dtype)
+                    values = self._fetch_decompressed_cache(bsz, cache_len, self.kv_cache_compressor, self.cache_v_bstring, self.cache_v_qjl, self.cache_v_orig, self.cache_v_res, xq.device, xq.dtype)
+                elif start_pos == 0:
+                    keys = xk
+                    values = xk
         else:
             self.cache_k = self.cache_k.to(xq)
             self.cache_v = self.cache_v.to(xq)
@@ -364,18 +468,27 @@ class Attention(nn.Module):
             keys = self.cache_k[:bsz, : start_pos + seqlen]
             values = self.cache_v[:bsz, : start_pos + seqlen]
 
-        # repeat k/v heads if n_kv_heads < n_heads
+        # repeat k/v heads if n_kv_heads < n_heads for GQA
         keys = repeat_kv(keys, self.n_rep)  # (bs, cache_len + seqlen, n_local_heads, head_dim)
         values = repeat_kv(values, self.n_rep)  # (bs, cache_len + seqlen, n_local_heads, head_dim)
 
         xq = xq.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
         keys = keys.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
         values = values.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
-        scores = torch.matmul(xq, keys.transpose(2, 3)) / math.sqrt(self.head_dim)
-        if mask is not None:
-            scores = scores + mask  # (bs, n_local_heads, seqlen, cache_len + seqlen)
-        scores = F.softmax(scores.float(), dim=-1).type_as(xq)
-        output = torch.matmul(scores, values)  # (bs, n_local_heads, seqlen, head_dim)
+
+        output = F.scaled_dot_product_attention(xq, 
+                                                keys, values, 
+                                                attn_mask=mask, 
+                                                dropout_p=0.0, 
+                                                is_causal=False
+                                                )
+
+        # scores = torch.matmul(xq, keys.transpose(2, 3)) / math.sqrt(self.head_dim)
+        # if mask is not None:
+        #    scores = scores + mask  # (bs, n_local_heads, seqlen, cache_len + seqlen)
+        # scores = F.softmax(scores.float(), dim=-1).type_as(xq)
+        # output = torch.matmul(scores, values)  # (bs, n_local_heads, seqlen, head_dim)
+
         output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
         result = self.wo(output)
 
@@ -501,6 +614,7 @@ class Transformer(nn.Module):
         # 2. COMPUTE PHASE (Dynamic)
         # Figure out where the heavy Transformer layers are
         compute_device = next(self.layers[0].parameters()).device
+
         h = h.to(compute_device)
 
         self.freqs_cis = self.freqs_cis.to(h.device)
