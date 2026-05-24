@@ -283,7 +283,7 @@ class Attention(nn.Module):
             )
             # Same as above
             c_qjl[:bsz, start_pos:end_pos] = q_tensor.view(
-                bsz, seqlen, self.n_kv_heads, 1, -1
+                bsz, seqlen, self.n_local_kv_heads, 1, -1
             )
             c_orig[:bsz, start_pos:end_pos] = orig_l2.view(
                 bsz, seqlen, self.n_local_kv_heads, 1
@@ -457,7 +457,7 @@ class Attention(nn.Module):
                     values = self._fetch_decompressed_cache(bsz, cache_len, self.kv_cache_compressor, self.cache_v_bstring, self.cache_v_qjl, self.cache_v_orig, self.cache_v_res, xq.device, xq.dtype)
                 elif start_pos == 0:
                     keys = xk
-                    values = xk
+                    values = xv
         else:
             self.cache_k = self.cache_k.to(xq)
             self.cache_v = self.cache_v.to(xq)
