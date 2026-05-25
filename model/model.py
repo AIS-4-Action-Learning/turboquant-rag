@@ -21,7 +21,7 @@ from fairscale.nn.model_parallel.layers import (
     RowParallelLinear,
     VocabParallelEmbedding,
 )
-from torch import nn, normal
+from torch import nn, normal, transpose
 
 from .args import ModelArgs
 
@@ -390,6 +390,30 @@ class Attention(nn.Module):
 
         return stacked.view(bsz, cache_len, self.n_local_kv_heads, compressor.block_size)
 
+    def attention(
+            self,
+            keys: torch.Tensor,
+            values: torch.Tensor,
+            xq: torch.Tensor,
+            mask: torch.Tensor | None) -> torch.Tensor:
+        # repeat k/v heads if n_kv_heads < n_heads for GQA
+        keys = repeat_kv(keys, self.n_rep)  # (bs, cache_len + seqlen, n_local_heads, head_dim)
+        values = repeat_kv(values, self.n_rep)  # (bs, cache_len + seqlen, n_local_heads, head_dim)
+
+        xq = xq.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
+        keys = keys.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
+        values = values.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
+
+        scores = torch.matmul(xq, keys.transpose(2, 3)) / math.sqrt(self.head_dim)
+
+        if mask is not None:
+            scores = scores + mask  # (bs, n_local_heads, seqlen, cache_len + seqlen)
+
+        scores = F.softmax(scores.float(), dim=-1).type_as(xq)
+        output = torch.matmul(scores, values)  # (bs, n_local_heads, seqlen, head_dim)
+
+        return output
+
     def forward(
         self,
         x: torch.Tensor,
@@ -435,29 +459,62 @@ class Attention(nn.Module):
                 self._store_compressed_cache(xv_norm, bsz, seqlen, start_pos, self.normal_compressor, self.cache_v_bstring_normal, self.cache_v_qjl_normal, self.cache_v_orig_normal, self.cache_v_res_normal)
 
                 if start_pos > 0:
-                    # 3. Fetch independently
-                    k_out = self._fetch_decompressed_cache(bsz, cache_len, self.outlier_compressor, self.cache_k_bstring_outlier, self.cache_k_qjl_outlier, self.cache_k_orig_outlier, self.cache_k_res_outlier, xq.device, xq.dtype)
-                    k_norm = self._fetch_decompressed_cache(bsz, cache_len, self.normal_compressor, self.cache_k_bstring_normal, self.cache_k_qjl_normal, self.cache_k_orig_normal, self.cache_k_res_normal, xq.device, xq.dtype)
-                    v_out = self._fetch_decompressed_cache(bsz, cache_len, self.outlier_compressor, self.cache_v_bstring_outlier, self.cache_v_qjl_outlier, self.cache_v_orig_outlier, self.cache_v_res_outlier, xq.device, xq.dtype)
-                    v_norm = self._fetch_decompressed_cache(bsz, cache_len, self.normal_compressor, self.cache_v_bstring_normal, self.cache_v_qjl_normal, self.cache_v_orig_normal, self.cache_v_res_normal, xq.device, xq.dtype)
+                    output = self.outlier_compressor.mixed_fused_attention(
+                        self.normal_compressor,
+                        xq,
 
-                    # 4. Concatenate back to 128-dim head
-                    keys = torch.cat([k_out, k_norm], dim=-1)
-                    values = torch.cat([v_out, v_norm], dim=-1)
+                        self.cache_k_bstring_outlier[:bsz, :cache_len],
+                        self.cache_k_qjl_outlier[:bsz, :cache_len],
+                        self.cache_k_res_outlier[:bsz, :cache_len],
+                        self.cache_k_orig_outlier[:bsz, :cache_len],
+                        self.cache_v_bstring_outlier[:bsz, :cache_len],
+                        self.cache_v_qjl_outlier[:bsz, :cache_len],
+                        self.cache_v_res_outlier[:bsz, :cache_len],
+                        self.cache_v_orig_outlier[:bsz, :cache_len],
+
+
+                        self.cache_k_bstring_normal[:bsz, :cache_len],
+                        self.cache_k_qjl_normal[:bsz, :cache_len],
+                        self.cache_k_res_normal[:bsz, :cache_len],
+                        self.cache_k_orig_normal[:bsz, :cache_len],
+                        self.cache_v_bstring_normal[:bsz, :cache_len],
+                        self.cache_v_qjl_normal[:bsz, :cache_len],
+                        self.cache_v_res_normal[:bsz, :cache_len],
+                        self.cache_v_orig_normal[:bsz, :cache_len],
+
+                        mask,
+                        cache_len,
+                        self.head_dim,
+                        self.n_local_heads,
+                        self.n_local_kv_heads
+                    ).transpose(1, 2)
                 elif start_pos == 0:
-                    keys = xk
-                    values = xv
+                    output = self.attention(xk, xv, xq, mask)
 
             else:
                 self._store_compressed_cache(xk, bsz, seqlen, start_pos, self.kv_cache_compressor, self.cache_k_bstring, self.cache_k_qjl, self.cache_k_orig, self.cache_k_res)
                 self._store_compressed_cache(xv, bsz, seqlen, start_pos, self.kv_cache_compressor, self.cache_v_bstring, self.cache_v_qjl, self.cache_v_orig, self.cache_v_res)
-
                 if start_pos > 0:
-                    keys = self._fetch_decompressed_cache(bsz, cache_len, self.kv_cache_compressor, self.cache_k_bstring, self.cache_k_qjl, self.cache_k_orig, self.cache_k_res, xq.device, xq.dtype)
-                    values = self._fetch_decompressed_cache(bsz, cache_len, self.kv_cache_compressor, self.cache_v_bstring, self.cache_v_qjl, self.cache_v_orig, self.cache_v_res, xq.device, xq.dtype)
+                    # Standard single-compressor fused attention
+                    output = self.kv_cache_compressor.fused_attention(
+                        xq,
+                        self.cache_k_bstring[:bsz, :cache_len],
+                        self.cache_k_qjl[:bsz, :cache_len],
+                        self.cache_k_res[:bsz, :cache_len],
+                        self.cache_k_orig[:bsz, :cache_len],
+                        self.cache_v_bstring[:bsz, :cache_len],
+                        self.cache_v_qjl[:bsz, :cache_len],
+                        self.cache_v_res[:bsz, :cache_len],
+                        self.cache_v_orig[:bsz, :cache_len],
+                        mask,
+                        cache_len,
+                        self.head_dim,
+                        self.n_local_heads,
+                        self.n_local_kv_heads
+                    ).transpose(1, 2)
                 elif start_pos == 0:
-                    keys = xk
-                    values = xv
+                    output = self.attention(xk, xv, xq, mask)
+
         else:
             self.cache_k = self.cache_k.to(xq)
             self.cache_v = self.cache_v.to(xq)
@@ -468,20 +525,7 @@ class Attention(nn.Module):
             keys = self.cache_k[:bsz, : start_pos + seqlen]
             values = self.cache_v[:bsz, : start_pos + seqlen]
 
-        # repeat k/v heads if n_kv_heads < n_heads for GQA
-        keys = repeat_kv(keys, self.n_rep)  # (bs, cache_len + seqlen, n_local_heads, head_dim)
-        values = repeat_kv(values, self.n_rep)  # (bs, cache_len + seqlen, n_local_heads, head_dim)
-
-        xq = xq.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
-        keys = keys.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
-        values = values.transpose(1, 2)  # (bs, n_local_heads, cache_len + seqlen, head_dim)
-
-
-        scores = torch.matmul(xq, keys.transpose(2, 3)) / math.sqrt(self.head_dim)
-        if mask is not None:
-           scores = scores + mask  # (bs, n_local_heads, seqlen, cache_len + seqlen)
-        scores = F.softmax(scores.float(), dim=-1).type_as(xq)
-        output = torch.matmul(scores, values)  # (bs, n_local_heads, seqlen, head_dim)
+            output = self.attention(keys, values, xq, mask)
 
         output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
         result = self.wo(output)
