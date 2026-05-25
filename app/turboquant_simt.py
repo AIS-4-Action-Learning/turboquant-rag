@@ -6,7 +6,7 @@ Includes both single-stream and multi-stream variants.
 import ctypes
 import os
 import sys
-from typing import Tuple, List
+from typing import Tuple, List, Optional
 
 import torch
 
@@ -509,8 +509,6 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
         if mask is not None:
             mask_f32 = mask.to(dtype=torch.float32).contiguous()
             mask_ptr = ctypes.c_void_p(mask_f32.data_ptr())
-
-        mask_ptr = ctypes.c_void_p(mask.data_ptr()) if mask is not None else ctypes.c_void_p(0)
 
         # Launch directly from PyTorch tensors (Zero Copy)
         status = self._lib.turboquant_fused_attention_direct(
