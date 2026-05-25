@@ -500,7 +500,15 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
 
         # Allocate output tensor matching Query shape
         bsz = xq.shape[0]
-        output = torch.empty_like(xq)
+        original_dtype = xq.dtype
+        xq_f32 = xq.detach().to(dtype=torch.float32).contiguous()
+        output_f32 = torch.empty_like(xq_f32)
+
+        # Ensure mask is also 32-bit if it exists
+        mask_ptr = ctypes.c_void_p(0)
+        if mask is not None:
+            mask_f32 = mask.to(dtype=torch.float32).contiguous()
+            mask_ptr = ctypes.c_void_p(mask_f32.data_ptr())
 
         mask_ptr = ctypes.c_void_p(mask.data_ptr()) if mask is not None else ctypes.c_void_p(0)
 
@@ -521,12 +529,12 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
             ctypes.c_uint32(head_dim),
             ctypes.c_uint32(n_local_heads),
             ctypes.c_uint32(n_local_kv_heads),
-            ctypes.c_void_p(output.data_ptr())
+            ctypes.c_void_p(output_f32.data_ptr())
         )
         if status != 0:
             raise RuntimeError(f"Fused attention failed with code {status}")
 
-        return output
+        return output_f32.to(dtype=original_dtype)
 
     def mixed_fused_attention(
         self,
@@ -551,10 +559,14 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
         Zero-copy fused attention + dequantization for mixed-precision compression.
         Call this on the OUTLIER compressor and pass the NORMAL compressor as the first arg.
         """
-        xq_c = xq.detach().contiguous()
-        output = torch.empty_like(xq_c)
+        original_dtype = xq.dtype
+        xq_f32 = xq.detach().to(dtype=torch.float32).contiguous()
+        output_f32 = torch.empty_like(xq_f32)
 
-        mask_ptr = ctypes.c_void_p(mask.contiguous().data_ptr()) if mask is not None else ctypes.c_void_p(0)
+        mask_ptr = ctypes.c_void_p(0)
+        if mask is not None:
+            mask_f32 = mask.to(dtype=torch.float32).contiguous()
+            mask_ptr = ctypes.c_void_p(mask_f32.data_ptr())
 
         # Get the dimension split directly from the compressor properties
         outlier_dim = self.block_size
@@ -562,7 +574,7 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
         status = self._lib.turboquant_fused_attention_mixed(
             self._batch_ctx,                 # Outlier context (self)
             normal_compressor._batch_ctx,    # Normal context
-            ctypes.c_void_p(xq_c.data_ptr()),
+            ctypes.c_void_p(xq_f32.data_ptr()),
 
             # Outlier pointers
             ctypes.c_void_p(k_b_out.contiguous().data_ptr()), ctypes.c_void_p(k_q_out.contiguous().data_ptr()),
@@ -582,13 +594,13 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
             ctypes.c_uint32(outlier_dim),
             ctypes.c_uint32(n_local_heads),
             ctypes.c_uint32(n_local_kv_heads),
-            ctypes.c_void_p(output.data_ptr())
+            ctypes.c_void_p(output_f32.data_ptr())
         )
 
         if status != 0:
             raise RuntimeError(f"turboquant_fused_attention_mixed failed with code {status}")
 
-        return output
+        return output_f32.to(dtype=original_dtype)
 
     def compress_block(self, block: torch.Tensor) -> Tuple[float, float, bytes, bytes]:
         """Single block - delegates to batch with size 1."""
