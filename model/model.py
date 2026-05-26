@@ -489,33 +489,6 @@ class Attention(nn.Module):
                         self.n_local_kv_heads
                     ).transpose(1, 2)
 
-                    # ==========================================
-                    # 2. POST-KERNEL TRIPWIRE (COMPARATIVE RACE)
-                    # ==========================================
-                    if seqlen == 1 and start_pos < 15:
-                        print(f"[DEBUG] C++ Output: NaN={torch.isnan(output).any().item()}, Max={output.abs().max().item():.4f}")
-
-                        # --- THE ULTIMATE MATH CHECK ---
-                        # 1. Fetch the decompressed cache into PyTorch
-                        k_dec_out = self._fetch_decompressed_cache(bsz, cache_len, self.outlier_compressor, self.cache_k_bstring_outlier, self.cache_k_qjl_outlier, self.cache_k_orig_outlier, self.cache_k_res_outlier, xq.device, xq.dtype)
-                        k_dec_norm = self._fetch_decompressed_cache(bsz, cache_len, self.normal_compressor, self.cache_k_bstring_normal, self.cache_k_qjl_normal, self.cache_k_orig_normal, self.cache_k_res_normal, xq.device, xq.dtype)
-
-                        v_dec_out = self._fetch_decompressed_cache(bsz, cache_len, self.outlier_compressor, self.cache_v_bstring_outlier, self.cache_v_qjl_outlier, self.cache_v_orig_outlier, self.cache_v_res_outlier, xq.device, xq.dtype)
-                        v_dec_norm = self._fetch_decompressed_cache(bsz, cache_len, self.normal_compressor, self.cache_v_bstring_normal, self.cache_v_qjl_normal, self.cache_v_orig_normal, self.cache_v_res_normal, xq.device, xq.dtype)
-
-                        # 2. Stitch the Outlier and Normal channels back together (dim=128)
-                        k_dec_combined = torch.cat([k_dec_out, k_dec_norm], dim=-1)
-                        v_dec_combined = torch.cat([v_dec_out, v_dec_norm], dim=-1)
-
-                        # 3. Run Standard PyTorch Attention on the decompressed tensors
-                        python_output = self.attention(k_dec_combined, v_dec_combined, xq, mask)
-
-                        # 4. Compare outputs!
-                        diff = (python_output - output).abs().max().item()
-                        print(f"[DEBUG] Python Output Max: {python_output.abs().max().item():.4f}")
-                        print(f"[DEBUG] MAX DIFFERENCE (C++ vs Python): {diff:.6f}")
-                        print("[DEBUG] ------------------\n")
-
                 elif start_pos == 0:
                     output = self.attention(xk, xv, xq, mask)
 
@@ -540,26 +513,6 @@ class Attention(nn.Module):
                         self.n_local_heads,
                         self.n_local_kv_heads
                     ).transpose(1, 2)
-
-                    # ==========================================
-                    # 2. POST-KERNEL TRIPWIRE (COMPARATIVE RACE)
-                    # ==========================================
-                    if seqlen == 1 and start_pos < 15:
-                        print(f"[DEBUG] C++ Output: NaN={torch.isnan(output).any().item()}, Max={output.abs().max().item():.4f}")
-
-                        # --- THE ULTIMATE MATH CHECK ---
-                        # 1. Fetch the decompressed cache into PyTorch
-                        k_dec = self._fetch_decompressed_cache(bsz, cache_len, self.kv_cache_compressor, self.cache_k_bstring, self.cache_k_qjl, self.cache_k_orig, self.cache_k_res, xq.device, xq.dtype)
-                        v_dec = self._fetch_decompressed_cache(bsz, cache_len, self.kv_cache_compressor, self.cache_v_bstring, self.cache_v_qjl, self.cache_v_orig, self.cache_v_res, xq.device, xq.dtype)
-
-                        # 3. Run Standard PyTorch Attention on the decompressed tensors
-                        python_output = self.attention(k_dec, v_dec, xq, mask)
-
-                        # 4. Compare outputs!
-                        diff = (python_output - output).abs().max().item()
-                        print(f"[DEBUG] Python Output Max: {python_output.abs().max().item():.4f}")
-                        print(f"[DEBUG] MAX DIFFERENCE (C++ vs Python): {diff:.6f}")
-                        print("[DEBUG] ------------------\n")
 
                 elif start_pos == 0:
                     output = self.attention(xk, xv, xq, mask)

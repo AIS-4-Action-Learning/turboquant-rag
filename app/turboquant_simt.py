@@ -498,30 +498,41 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
                     mask: torch.Tensor, seqlen: int, head_dim: int,
                     n_local_heads: int, n_local_kv_heads: int) -> torch.Tensor:
 
-        # Allocate output tensor matching Query shape
-        bsz = xq.shape[0]
+        if xq.shape[0] != 1 or xq.shape[1] != 1:
+            raise ValueError(
+                "SIMT fused attention currently supports decode-only tensors "
+                f"with shape (1, 1, heads, dim), got {tuple(xq.shape)}"
+            )
+
         original_dtype = xq.dtype
         xq_f32 = xq.detach().to(dtype=torch.float32).contiguous()
         output_f32 = torch.empty_like(xq_f32)
 
-        # Ensure mask is also 32-bit if it exists
         mask_ptr = ctypes.c_void_p(0)
         if mask is not None:
             mask_f32 = mask.to(dtype=torch.float32).contiguous()
             mask_ptr = ctypes.c_void_p(mask_f32.data_ptr())
 
-        # Launch directly from PyTorch tensors (Zero Copy)
+        k_b = k_b.contiguous()
+        k_q = k_q.contiguous()
+        k_r = k_r.contiguous()
+        k_o = k_o.contiguous()
+        v_b = v_b.contiguous()
+        v_q = v_q.contiguous()
+        v_r = v_r.contiguous()
+        v_o = v_o.contiguous()
+
         status = self._lib.turboquant_fused_attention_direct(
             self._batch_ctx,
-            ctypes.c_void_p(xq.contiguous().data_ptr()),
-            ctypes.c_void_p(k_b.contiguous().data_ptr()),
-            ctypes.c_void_p(k_q.contiguous().data_ptr()),
-            ctypes.c_void_p(k_r.contiguous().data_ptr()),
-            ctypes.c_void_p(k_o.contiguous().data_ptr()),
-            ctypes.c_void_p(v_b.contiguous().data_ptr()),
-            ctypes.c_void_p(v_q.contiguous().data_ptr()),
-            ctypes.c_void_p(v_r.contiguous().data_ptr()),
-            ctypes.c_void_p(v_o.contiguous().data_ptr()),
+            ctypes.c_void_p(xq_f32.data_ptr()),
+            ctypes.c_void_p(k_b.data_ptr()),
+            ctypes.c_void_p(k_q.data_ptr()),
+            ctypes.c_void_p(k_r.data_ptr()),
+            ctypes.c_void_p(k_o.data_ptr()),
+            ctypes.c_void_p(v_b.data_ptr()),
+            ctypes.c_void_p(v_q.data_ptr()),
+            ctypes.c_void_p(v_r.data_ptr()),
+            ctypes.c_void_p(v_o.data_ptr()),
             mask_ptr,
             ctypes.c_uint32(seqlen),
             ctypes.c_uint32(head_dim),
@@ -557,6 +568,12 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
         Zero-copy fused attention + dequantization for mixed-precision compression.
         Call this on the OUTLIER compressor and pass the NORMAL compressor as the first arg.
         """
+        if xq.shape[0] != 1 or xq.shape[1] != 1:
+            raise ValueError(
+                "SIMT mixed fused attention currently supports decode-only tensors "
+                f"with shape (1, 1, heads, dim), got {tuple(xq.shape)}"
+            )
+
         original_dtype = xq.dtype
         xq_f32 = xq.detach().to(dtype=torch.float32).contiguous()
         output_f32 = torch.empty_like(xq_f32)
@@ -569,22 +586,39 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
         # Get the dimension split directly from the compressor properties
         outlier_dim = self.block_size
 
+        k_b_out = k_b_out.contiguous()
+        k_q_out = k_q_out.contiguous()
+        k_r_out = k_r_out.contiguous()
+        k_o_out = k_o_out.contiguous()
+        v_b_out = v_b_out.contiguous()
+        v_q_out = v_q_out.contiguous()
+        v_r_out = v_r_out.contiguous()
+        v_o_out = v_o_out.contiguous()
+        k_b_norm = k_b_norm.contiguous()
+        k_q_norm = k_q_norm.contiguous()
+        k_r_norm = k_r_norm.contiguous()
+        k_o_norm = k_o_norm.contiguous()
+        v_b_norm = v_b_norm.contiguous()
+        v_q_norm = v_q_norm.contiguous()
+        v_r_norm = v_r_norm.contiguous()
+        v_o_norm = v_o_norm.contiguous()
+
         status = self._lib.turboquant_fused_attention_mixed(
             self._batch_ctx,                 # Outlier context (self)
             normal_compressor._batch_ctx,    # Normal context
             ctypes.c_void_p(xq_f32.data_ptr()),
 
             # Outlier pointers
-            ctypes.c_void_p(k_b_out.contiguous().data_ptr()), ctypes.c_void_p(k_q_out.contiguous().data_ptr()),
-            ctypes.c_void_p(k_r_out.contiguous().data_ptr()), ctypes.c_void_p(k_o_out.contiguous().data_ptr()),
-            ctypes.c_void_p(v_b_out.contiguous().data_ptr()), ctypes.c_void_p(v_q_out.contiguous().data_ptr()),
-            ctypes.c_void_p(v_r_out.contiguous().data_ptr()), ctypes.c_void_p(v_o_out.contiguous().data_ptr()),
+            ctypes.c_void_p(k_b_out.data_ptr()), ctypes.c_void_p(k_q_out.data_ptr()),
+            ctypes.c_void_p(k_r_out.data_ptr()), ctypes.c_void_p(k_o_out.data_ptr()),
+            ctypes.c_void_p(v_b_out.data_ptr()), ctypes.c_void_p(v_q_out.data_ptr()),
+            ctypes.c_void_p(v_r_out.data_ptr()), ctypes.c_void_p(v_o_out.data_ptr()),
 
             # Normal pointers
-            ctypes.c_void_p(k_b_norm.contiguous().data_ptr()), ctypes.c_void_p(k_q_norm.contiguous().data_ptr()),
-            ctypes.c_void_p(k_r_norm.contiguous().data_ptr()), ctypes.c_void_p(k_o_norm.contiguous().data_ptr()),
-            ctypes.c_void_p(v_b_norm.contiguous().data_ptr()), ctypes.c_void_p(v_q_norm.contiguous().data_ptr()),
-            ctypes.c_void_p(v_r_norm.contiguous().data_ptr()), ctypes.c_void_p(v_o_norm.contiguous().data_ptr()),
+            ctypes.c_void_p(k_b_norm.data_ptr()), ctypes.c_void_p(k_q_norm.data_ptr()),
+            ctypes.c_void_p(k_r_norm.data_ptr()), ctypes.c_void_p(k_o_norm.data_ptr()),
+            ctypes.c_void_p(v_b_norm.data_ptr()), ctypes.c_void_p(v_q_norm.data_ptr()),
+            ctypes.c_void_p(v_r_norm.data_ptr()), ctypes.c_void_p(v_o_norm.data_ptr()),
 
             mask_ptr,
             ctypes.c_uint32(cache_len),
