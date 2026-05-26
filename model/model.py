@@ -459,6 +459,19 @@ class Attention(nn.Module):
                 self._store_compressed_cache(xv_norm, bsz, seqlen, start_pos, self.normal_compressor, self.cache_v_bstring_normal, self.cache_v_qjl_normal, self.cache_v_orig_normal, self.cache_v_res_normal)
 
                 if start_pos > 0:
+                    # --- 1. PRE-KERNEL TRIPWIRE ---
+                    if start_pos == 1:
+                        print(f"\n[DEBUG] --- STEP {start_pos} ---")
+                        print(f"[DEBUG] xq: NaN={torch.isnan(xq).any().item()}, Max={xq.abs().max().item():.4f}")
+
+                        k_orig_max = self.cache_k_orig_outlier[:bsz, :cache_len].abs().max().item()
+                        k_orig_nan = torch.isnan(self.cache_k_orig_outlier[:bsz, :cache_len]).any().item()
+                        print(f"[DEBUG] k_orig_outlier: NaN={k_orig_nan}, Max={k_orig_max:.4f}")
+
+                        v_orig_max = self.cache_v_orig_normal[:bsz, :cache_len].abs().max().item()
+                        v_orig_nan = torch.isnan(self.cache_v_orig_normal[:bsz, :cache_len]).any().item()
+                        print(f"[DEBUG] v_orig_normal:  NaN={v_orig_nan}, Max={v_orig_max:.4f}")
+
                     output = self.outlier_compressor.mixed_fused_attention(
                         self.normal_compressor,
                         xq,
@@ -488,6 +501,11 @@ class Attention(nn.Module):
                         self.n_local_heads,
                         self.n_local_kv_heads
                     ).transpose(1, 2)
+
+                    # --- 2. POST-KERNEL TRIPWIRE ---
+                    if start_pos == 1:
+                        print(f"[DEBUG] C++ Output: NaN={torch.isnan(output).any().item()}, Max={output.abs().max().item():.4f}")
+                        print("[DEBUG] ------------------\n")
                 elif start_pos == 0:
                     output = self.attention(xk, xv, xq, mask)
 
@@ -495,6 +513,15 @@ class Attention(nn.Module):
                 self._store_compressed_cache(xk, bsz, seqlen, start_pos, self.kv_cache_compressor, self.cache_k_bstring, self.cache_k_qjl, self.cache_k_orig, self.cache_k_res)
                 self._store_compressed_cache(xv, bsz, seqlen, start_pos, self.kv_cache_compressor, self.cache_v_bstring, self.cache_v_qjl, self.cache_v_orig, self.cache_v_res)
                 if start_pos > 0:
+                    # --- 1. PRE-KERNEL TRIPWIRE ---
+                    if start_pos == 1:
+                        print(f"\n[DEBUG] --- STEP {start_pos} ---")
+                        print(f"[DEBUG] xq: NaN={torch.isnan(xq).any().item()}, Max={xq.abs().max().item():.4f}")
+
+                        k_orig_max = self.cache_k_orig[:bsz, :cache_len].abs().max().item()
+                        k_orig_nan = torch.isnan(self.cache_k_orig[:bsz, :cache_len]).any().item()
+                        print(f"[DEBUG] k_orig: NaN={k_orig_nan}, Max={k_orig_max:.4f}")
+
                     # Standard single-compressor fused attention
                     output = self.kv_cache_compressor.fused_attention(
                         xq,
@@ -512,6 +539,11 @@ class Attention(nn.Module):
                         self.n_local_heads,
                         self.n_local_kv_heads
                     ).transpose(1, 2)
+                    # --- 2. POST-KERNEL TRIPWIRE ---
+
+                    if start_pos == 1:
+                        print(f"[DEBUG] C++ Output: NaN={torch.isnan(output).any().item()}, Max={output.abs().max().item():.4f}")
+                        print("[DEBUG] ------------------\n")
                 elif start_pos == 0:
                     output = self.attention(xk, xv, xq, mask)
 
