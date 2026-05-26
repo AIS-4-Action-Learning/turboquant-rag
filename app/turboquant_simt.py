@@ -6,7 +6,7 @@ Includes both single-stream and multi-stream variants.
 import ctypes
 import os
 import sys
-from typing import Tuple, List
+from typing import Tuple, List, Optional
 
 import torch
 
@@ -413,6 +413,22 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
         ]
         lib.turboquant_prod_dequantization_batch.restype = ctypes.POINTER(ctypes.POINTER(Vector))
         
+        lib.turboquant_prod_quantization_batch_direct.argtypes = [
+            ctypes.POINTER(TurboQuantBatchContext),
+            ctypes.c_void_p,  # d_inputs
+            ctypes.c_void_p,  # d_bstrings
+            ctypes.c_void_p,  # d_qjls
+            ctypes.c_void_p,  # d_residual_l2s
+            ctypes.c_uint32,  # batch_size
+        ]
+        lib.turboquant_prod_quantization_batch_direct.restype = ctypes.c_uint8
+        
+        lib.turboquant_prod_dequantization_batch.argtypes = [
+            ctypes.POINTER(TurboQuantBatchContext),
+            ctypes.POINTER(QuantizationBatchResult),
+        ]
+        lib.turboquant_prod_dequantization_batch.restype = ctypes.POINTER(ctypes.POINTER(Vector))
+        
         # Zero-copy direct GPU batch dequantization (no host round-trip)
         lib.turboquant_prod_dequantization_batch_direct.argtypes = [
             ctypes.POINTER(TurboQuantBatchContext),
@@ -423,7 +439,46 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
             ctypes.c_uint32,  # batch_size
         ]
         lib.turboquant_prod_dequantization_batch_direct.restype = ctypes.c_uint8
-    
+
+        # Define the new Fused Attention binding
+        lib.turboquant_fused_attention_direct.argtypes = [
+            ctypes.POINTER(TurboQuantBatchContext),
+            ctypes.c_void_p, # xq
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, # Keys
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, # Values
+            ctypes.c_void_p, # mask
+            ctypes.c_uint32, # seqlen
+            ctypes.c_uint32, # head_dim
+            ctypes.c_uint32, # n_local_heads
+            ctypes.c_uint32, # n_local_kv_heads
+            ctypes.c_void_p  # d_output
+        ]
+        lib.turboquant_fused_attention_direct.restype = ctypes.c_uint8
+
+        # 2. Mixed Precision Fused Attention
+        lib.turboquant_fused_attention_mixed.argtypes = [
+            ctypes.POINTER(TurboQuantBatchContext), # Outlier Context
+            ctypes.POINTER(TurboQuantBatchContext), # Normal Context
+            ctypes.c_void_p,  # xq
+
+            # Outlier History
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, # K out
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, # V out
+
+            # Normal History
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, # K norm
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, # V norm
+
+            ctypes.c_void_p,  # mask
+            ctypes.c_uint32,  # seqlen (cache_len)
+            ctypes.c_uint32,  # head_dim
+            ctypes.c_uint32,  # outlier_dim
+            ctypes.c_uint32,  # n_local_heads
+            ctypes.c_uint32,  # n_local_kv_heads
+            ctypes.c_void_p   # d_output
+        ]
+        lib.turboquant_fused_attention_mixed.restype = ctypes.c_uint8
+
     def _init_context(self):
         """Initialize batch context."""
         # Allocate batch context pointer
@@ -446,7 +501,149 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
             status = self._lib.turboquant_batch_init_load(
                 self._batch_ctx, self.context_path.encode("utf-8")
             )
-    
+
+    def fused_attention(self, xq: torch.Tensor,
+                    k_b: torch.Tensor, k_q: torch.Tensor, k_r: torch.Tensor, k_o: torch.Tensor,
+                    v_b: torch.Tensor, v_q: torch.Tensor, v_r: torch.Tensor, v_o: torch.Tensor,
+                    mask: torch.Tensor, seqlen: int, head_dim: int,
+                    n_local_heads: int, n_local_kv_heads: int) -> torch.Tensor:
+
+        if xq.shape[0] != 1 or xq.shape[1] != 1:
+            raise ValueError(
+                "SIMT fused attention currently supports decode-only tensors "
+                f"with shape (1, 1, heads, dim), got {tuple(xq.shape)}"
+            )
+
+        original_dtype = xq.dtype
+        xq_f32 = xq.detach().to(dtype=torch.float32).contiguous()
+        output_f32 = torch.empty_like(xq_f32)
+
+        mask_ptr = ctypes.c_void_p(0)
+        if mask is not None:
+            mask_f32 = mask.to(dtype=torch.float32).contiguous()
+            mask_ptr = ctypes.c_void_p(mask_f32.data_ptr())
+
+        k_b = k_b.contiguous()
+        k_q = k_q.contiguous()
+        k_r = k_r.contiguous()
+        k_o = k_o.contiguous()
+        v_b = v_b.contiguous()
+        v_q = v_q.contiguous()
+        v_r = v_r.contiguous()
+        v_o = v_o.contiguous()
+
+        status = self._lib.turboquant_fused_attention_direct(
+            self._batch_ctx,
+            ctypes.c_void_p(xq_f32.data_ptr()),
+            ctypes.c_void_p(k_b.data_ptr()),
+            ctypes.c_void_p(k_q.data_ptr()),
+            ctypes.c_void_p(k_r.data_ptr()),
+            ctypes.c_void_p(k_o.data_ptr()),
+            ctypes.c_void_p(v_b.data_ptr()),
+            ctypes.c_void_p(v_q.data_ptr()),
+            ctypes.c_void_p(v_r.data_ptr()),
+            ctypes.c_void_p(v_o.data_ptr()),
+            mask_ptr,
+            ctypes.c_uint32(seqlen),
+            ctypes.c_uint32(head_dim),
+            ctypes.c_uint32(n_local_heads),
+            ctypes.c_uint32(n_local_kv_heads),
+            ctypes.c_void_p(output_f32.data_ptr())
+        )
+        if status != 0:
+            raise RuntimeError(f"Fused attention failed with code {status}")
+
+        return output_f32.to(dtype=original_dtype)
+
+    def mixed_fused_attention(
+        self,
+        normal_compressor: 'SIMTBatchCompressor',
+        xq: torch.Tensor,
+
+        # Outlier History
+        k_b_out: torch.Tensor, k_q_out: torch.Tensor, k_r_out: torch.Tensor, k_o_out: torch.Tensor,
+        v_b_out: torch.Tensor, v_q_out: torch.Tensor, v_r_out: torch.Tensor, v_o_out: torch.Tensor,
+
+        # Normal History
+        k_b_norm: torch.Tensor, k_q_norm: torch.Tensor, k_r_norm: torch.Tensor, k_o_norm: torch.Tensor,
+        v_b_norm: torch.Tensor, v_q_norm: torch.Tensor, v_r_norm: torch.Tensor, v_o_norm: torch.Tensor,
+
+        mask: Optional[torch.Tensor],
+        cache_len: int,
+        head_dim: int,
+        n_local_heads: int,
+        n_local_kv_heads: int
+    ) -> torch.Tensor:
+        """
+        Zero-copy fused attention + dequantization for mixed-precision compression.
+        Call this on the OUTLIER compressor and pass the NORMAL compressor as the first arg.
+        """
+        if xq.shape[0] != 1 or xq.shape[1] != 1:
+            raise ValueError(
+                "SIMT mixed fused attention currently supports decode-only tensors "
+                f"with shape (1, 1, heads, dim), got {tuple(xq.shape)}"
+            )
+
+        original_dtype = xq.dtype
+        xq_f32 = xq.detach().to(dtype=torch.float32).contiguous()
+        output_f32 = torch.empty_like(xq_f32)
+
+        mask_ptr = ctypes.c_void_p(0)
+        if mask is not None:
+            mask_f32 = mask.to(dtype=torch.float32).contiguous()
+            mask_ptr = ctypes.c_void_p(mask_f32.data_ptr())
+
+        # Get the dimension split directly from the compressor properties
+        outlier_dim = self.block_size
+
+        k_b_out = k_b_out.contiguous()
+        k_q_out = k_q_out.contiguous()
+        k_r_out = k_r_out.contiguous()
+        k_o_out = k_o_out.contiguous()
+        v_b_out = v_b_out.contiguous()
+        v_q_out = v_q_out.contiguous()
+        v_r_out = v_r_out.contiguous()
+        v_o_out = v_o_out.contiguous()
+        k_b_norm = k_b_norm.contiguous()
+        k_q_norm = k_q_norm.contiguous()
+        k_r_norm = k_r_norm.contiguous()
+        k_o_norm = k_o_norm.contiguous()
+        v_b_norm = v_b_norm.contiguous()
+        v_q_norm = v_q_norm.contiguous()
+        v_r_norm = v_r_norm.contiguous()
+        v_o_norm = v_o_norm.contiguous()
+
+        status = self._lib.turboquant_fused_attention_mixed(
+            self._batch_ctx,                 # Outlier context (self)
+            normal_compressor._batch_ctx,    # Normal context
+            ctypes.c_void_p(xq_f32.data_ptr()),
+
+            # Outlier pointers
+            ctypes.c_void_p(k_b_out.data_ptr()), ctypes.c_void_p(k_q_out.data_ptr()),
+            ctypes.c_void_p(k_r_out.data_ptr()), ctypes.c_void_p(k_o_out.data_ptr()),
+            ctypes.c_void_p(v_b_out.data_ptr()), ctypes.c_void_p(v_q_out.data_ptr()),
+            ctypes.c_void_p(v_r_out.data_ptr()), ctypes.c_void_p(v_o_out.data_ptr()),
+
+            # Normal pointers
+            ctypes.c_void_p(k_b_norm.data_ptr()), ctypes.c_void_p(k_q_norm.data_ptr()),
+            ctypes.c_void_p(k_r_norm.data_ptr()), ctypes.c_void_p(k_o_norm.data_ptr()),
+            ctypes.c_void_p(v_b_norm.data_ptr()), ctypes.c_void_p(v_q_norm.data_ptr()),
+            ctypes.c_void_p(v_r_norm.data_ptr()), ctypes.c_void_p(v_o_norm.data_ptr()),
+
+            mask_ptr,
+            ctypes.c_uint32(cache_len),
+            ctypes.c_uint32(head_dim),
+            ctypes.c_uint32(outlier_dim),
+            ctypes.c_uint32(n_local_heads),
+            ctypes.c_uint32(n_local_kv_heads),
+            ctypes.c_void_p(output_f32.data_ptr())
+        )
+
+        if status != 0:
+            raise RuntimeError(f"turboquant_fused_attention_mixed failed with code {status}")
+
+        return output_f32.to(dtype=original_dtype)
+
     def compress_block(self, block: torch.Tensor) -> Tuple[float, float, bytes, bytes]:
         """Single block - delegates to batch with size 1."""
         results = self.compress_chunk([block])
@@ -454,7 +651,7 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
 
     def compress_chunk_tensor_direct(
         self,
-        blocks: torch.Tensor,
+        blocks: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Direct GPU batch quantization for a contiguous `(N, block_size)` tensor.
@@ -507,7 +704,6 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
         residual_l2s.index_copy_(0, active_indices, active_residual_l2s)
 
         return bstrings, qjls, original_l2s, residual_l2s
-
 
     def compress_chunk(self, blocks: List[torch.Tensor]) -> List[Tuple[float, float, bytes, bytes]]:
         batch_size = len(blocks)

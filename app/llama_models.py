@@ -378,12 +378,15 @@ class LlamaGenerator:
 
                 # Warmup loop for compressed KV cache
                 if seq_len > 1:
+
+                    # Pass ALL prompt tokens up to the second-to-last one simultaneously
                     prefill_prompt = tensor_tokens[:, :-1].contiguous()
                     _ = llama.model.forward(prefill_prompt, start_pos=0)
                     current_pos = seq_len - 1
 
                     if llama.device == "cuda":
                         torch.cuda.synchronize()
+
 
                 current_token = tensor_tokens[:, -1:].contiguous()
 
