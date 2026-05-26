@@ -243,13 +243,4 @@ data/
 artifacts
 debug
 pyrightconfig.json
-PROJECT_DESCRIPTION.md
-USER_MANUAL.md
-USER_MANUAL.pdf
-ToDo.md
-NEW_FEATURE.md
-NEW_FEATURE.pdf
-CURRENT_IMPLEMENTATION.md
-COMPARISON.md
-USER_MANUAL_v2.pdf
-NEW_FEATURE_v2.pdf
+docs/
