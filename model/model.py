@@ -460,7 +460,7 @@ class Attention(nn.Module):
 
                 if start_pos > 0:
                     # --- 1. PRE-KERNEL TRIPWIRE ---
-                    if start_pos == 1:
+                    if seqlen == 1 and start_pos < 15:
                         print(f"\n[DEBUG] --- STEP {start_pos} ---")
                         print(f"[DEBUG] xq: NaN={torch.isnan(xq).any().item()}, Max={xq.abs().max().item():.4f}")
 
@@ -503,7 +503,7 @@ class Attention(nn.Module):
                     ).transpose(1, 2)
 
                     # --- 2. POST-KERNEL TRIPWIRE ---
-                    if start_pos == 1:
+                    if seqlen == 1 and start_pos < 15:
                         print(f"[DEBUG] C++ Output: NaN={torch.isnan(output).any().item()}, Max={output.abs().max().item():.4f}")
                         print("[DEBUG] ------------------\n")
                 elif start_pos == 0:
@@ -513,8 +513,9 @@ class Attention(nn.Module):
                 self._store_compressed_cache(xk, bsz, seqlen, start_pos, self.kv_cache_compressor, self.cache_k_bstring, self.cache_k_qjl, self.cache_k_orig, self.cache_k_res)
                 self._store_compressed_cache(xv, bsz, seqlen, start_pos, self.kv_cache_compressor, self.cache_v_bstring, self.cache_v_qjl, self.cache_v_orig, self.cache_v_res)
                 if start_pos > 0:
+                    print(f"Gets here at start_pos {start_pos} and seqlen {seqlen}")
                     # --- 1. PRE-KERNEL TRIPWIRE ---
-                    if start_pos == 1:
+                    if seqlen == 1 and start_pos < 15:
                         print(f"\n[DEBUG] --- STEP {start_pos} ---")
                         print(f"[DEBUG] xq: NaN={torch.isnan(xq).any().item()}, Max={xq.abs().max().item():.4f}")
 
@@ -541,7 +542,7 @@ class Attention(nn.Module):
                     ).transpose(1, 2)
                     # --- 2. POST-KERNEL TRIPWIRE ---
 
-                    if start_pos == 1:
+                    if seqlen == 1 and start_pos < 15:
                         print(f"[DEBUG] C++ Output: NaN={torch.isnan(output).any().item()}, Max={output.abs().max().item():.4f}")
                         print("[DEBUG] ------------------\n")
                 elif start_pos == 0:
