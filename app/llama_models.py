@@ -2,6 +2,7 @@ import traceback as tr
 import ctypes
 import os
 from pathlib import Path
+from typing import List, Any, Optional, Tuple
 
 import torch
 import json
@@ -12,6 +13,7 @@ from app import (
     TOKENIZER_PATH, get_turboquant_lib_path, TURBOQUANT_VARIANT,
     get_compressor_for_variant
 )
+from app.metrics import perplexity
 from llama_models.llama3.args import ModelArgs
 from llama_models.llama3.model import Transformer
 from llama_models.llama3.tokenizer import Tokenizer
@@ -88,7 +90,7 @@ class Llama:
         except Exception as e:
             tr.print_exc()
 
-    def input_encoding(self, input_seq : str):
+    def input_encoding(self, input_seq: str) -> tuple[List[int], torch.Tensor]:
       try:
           tokens = self.tokenizer.encode(input_seq, bos=True, eos=False)
           # 1. Create on CPU first (Standard LongTensor)
@@ -293,24 +295,6 @@ class LlamaCompressed(Llama):
                 if isinstance(attr, torch.Tensor) and attr.device.type == "meta":
                     setattr(m, name, torch.zeros(tuple(attr.shape), dtype=attr.dtype, device=device))
 
-
-        # 2. Safe sweep for the custom KV Compressor (Catching lists/dicts)
-        # if hasattr(self, 'kv_compressor') and self.kv_compressor is not None:
-        #    for name, attr in vars(self.kv_compressor).items():
-        #        # Direct tensors
-        #        if isinstance(attr, torch.Tensor) and attr.device.type == "meta":
-        #            setattr(self.kv_compressor, name, torch.zeros(attr.shape, dtype=attr.dtype, device=device))
-        #        # Tensors hidden inside a list
-        #        elif isinstance(attr, list):
-        #            for i, v in enumerate(attr):
-        #                if isinstance(v, torch.Tensor) and v.device.type == "meta":
-        #                    attr[i] = torch.zeros(v.shape, dtype=v.dtype, device=device)
-        #        # Tensors hidden inside a dictionary
-        #        elif isinstance(attr, dict):
-        #            for k, v in attr.items():
-        #                if isinstance(v, torch.Tensor) and v.device.type == "meta":
-        #                    attr[k] = torch.zeros(v.shape, dtype=v.dtype, device=device)
-
         # 2. Safe sweep for the custom KV Compressors (Catching lists/dicts)
         compressors_to_sweep = []
         if self.is_mixed_precision:
@@ -364,9 +348,10 @@ class LlamaCompressed(Llama):
         self.model.eval()
 
 class LlamaGenerator:
-    def generate(self, tensor_tokens : torch.Tensor,
-                 llama : LlamaBF16 | LlamaCompressed,
-                 max_gen_len : int = 1024) -> str:
+    def generate(self, tensor_tokens: torch.Tensor,
+                 token_ids: Optional[List[int]],
+                 llama: LlamaBF16 | LlamaCompressed,
+                 max_gen_len: int = 1024) -> str:
 
         try:
             generated_token = []
@@ -381,12 +366,15 @@ class LlamaGenerator:
 
                     # Pass ALL prompt tokens up to the second-to-last one simultaneously
                     prefill_prompt = tensor_tokens[:, :-1].contiguous()
-                    _ = llama.model.forward(prefill_prompt, start_pos=0)
+                    logits = llama.model.forward(prefill_prompt, start_pos=0)
+
+                    if token_ids != None:
+                        ppl = perplexity(logits, token_ids)
+
                     current_pos = seq_len - 1
 
                     if llama.device == "cuda":
                         torch.cuda.synchronize()
-
 
                 current_token = tensor_tokens[:, -1:].contiguous()
 
