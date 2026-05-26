@@ -217,6 +217,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+<<<<<<< HEAD
 NEW_FEATURE.md
 NEW_FEATURE.pdf
 PROJECT_DESCRIPTION.md
@@ -224,3 +225,31 @@ ToDo.md
 USER_MANUAL.md
 USER_MANUAL.pdf
 debug/
+=======
+# --- rag library-specific ---
+
+# Data files (large PDFs and processed corpora)
+data/
+
+# FAISS indexes (regeneratable from corpus.json)
+*.faiss
+
+# macOS
+.DS_Store
+
+# Editor configs
+.vscode/
+.idea/
+artifacts
+debug
+pyrightconfig.json
+PROJECT_DESCRIPTION.md
+USER_MANUAL.md
+USER_MANUAL.pdf
+ToDo.md
+NEW_FEATURE.md
+NEW_FEATURE.pdf
+CURRENT_IMPLEMENTATION.md
+COMPARISON.md
+USER_MANUAL_v2.pdf
+NEW_FEATURE_v2.pdf
