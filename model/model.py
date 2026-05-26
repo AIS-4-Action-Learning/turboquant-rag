@@ -460,7 +460,6 @@ class Attention(nn.Module):
             # Compute the total cache length (start position + current seqlen)
             # During prefill cache length is just the sequence length
             cache_len = start_pos + seqlen
-            self._ensure_decode_cache_device(xq.device, xq.dtype)
 
             # Set all of the quantization results device to "cuda"
             self._ensure_compressed_cache_device(xq.device)
