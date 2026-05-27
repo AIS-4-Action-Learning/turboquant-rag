@@ -10,9 +10,10 @@ def perplexity(
     if logits.dim() == 3:
         logits = logits.squeeze(0)              # → (seq_len, vocab_size)
 
+    seqlen = logits.shape[0]
     shift_logits  = logits[:-1]                 # (seq_len - 1, vocab_size)
     shift_targets = torch.tensor(
-        token_ids[1:], dtype=torch.long, device=logits.device
+        token_ids[1:seqlen], dtype=torch.long, device=logits.device
     )                                           # (seq_len - 1,)
 
     log_probs_full = F.log_softmax(shift_logits, dim=-1)
