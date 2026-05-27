@@ -370,6 +370,7 @@ class LlamaGenerator:
 
                     if token_ids != None:
                         ppl = perplexity(logits, token_ids)
+                        print(f"Perplexity: {ppl}")
 
                     current_pos = seq_len - 1
 
