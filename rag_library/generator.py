@@ -223,18 +223,13 @@ class _LlamaGeneratorBase:
     TurboQuantLlamaGenerator.
     """
 
-    DEFAULT_SYSTEM_PROMPT = """You are a helpful assistant.
-
-    Answer the question based STRICTLY on the provided context.
-
-    Rules:
-    - If the context doesn't contain the answer, say 'I don't have enough information to answer this.'
-    - Always cite which source your answer comes from using the format: (Source: <filename>, Page <number>).
-    - Use the context to answer, applying reasonable inference.
-    - If the answer comes from multiple chunks/sources, combine and cite all of them.
-    - If the question is yes/no, answer with only 'Yes' or 'No'
-    - If the question asks what NOT to do, infer the answer from what the context has
-    """
+    DEFAULT_SYSTEM_PROMPT = """You are a helpful assistant that answers questions about Deep Learning.
+You must:
+Answer based only on the provided context, if the question is not very specific to the context, reply asking for clarification. Other wise:
+1. Be concise and accurate.
+2. Cite your sources (document name and page number).
+3. If the question is out of scope, politely decline.
+"""
 
     def _format_prompt(self, query: str, context: str, omit_sysprompt: bool) -> str:
         """Format query + context into a Llama 3.1 chat-template string.

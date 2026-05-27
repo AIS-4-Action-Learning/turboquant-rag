@@ -410,6 +410,13 @@ def format_prompt(prompt: str, context: str, sysprompt: str) -> str:
             f"Context:\n{context}\n\n"
             f"Question: {prompt}"
         )
+        user_content = f"""Question: {prompt}
+
+Context from the knowledge base:
+{context}
+
+Please answer the question using the provided context. Include source citations."""
+
 
         # Llama 3.1 chat template (IDs: <|begin_of_text|>=128000,
         # <|start_header_id|>=128006, <|end_header_id|>=128007, <|eot_id|>=128009)
