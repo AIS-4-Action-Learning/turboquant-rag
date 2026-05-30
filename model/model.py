@@ -9,8 +9,6 @@
 # This software may be used and distributed in accordance with the terms of the Llama 3 Community License Agreement.
 
 import math
-import time
-from re import I
 from typing import Any, List, Optional, Tuple
 
 import fairscale.nn.model_parallel.initialize as fs_init
@@ -21,7 +19,8 @@ from fairscale.nn.model_parallel.layers import (
     RowParallelLinear,
     VocabParallelEmbedding,
 )
-from torch import nn, normal, transpose
+from torch import nn
+from app.metrics import mse
 
 from .args import ModelArgs
 
@@ -114,6 +113,7 @@ class Attention(nn.Module):
     def __init__(
         self,
         args: ModelArgs,
+        layer_n: int,
         kv_cache_compressor: Optional[Any] = None,
         outlier_compressor: Optional[Any] = None,
         normal_compressor: Optional[Any] = None
@@ -125,6 +125,12 @@ class Attention(nn.Module):
         self.n_local_kv_heads = self.n_kv_heads // world_size
         self.n_rep = self.n_local_heads // self.n_local_kv_heads
         self.head_dim = args.dim // args.n_heads
+        self.use_mse = args.k_mse is not None and args.v_mse is not None
+        self.layer_n = layer_n
+
+        if self.use_mse:
+            self.k_mse = args.k_mse
+            self.v_mse = args.v_mse
 
         self.wq = ColumnParallelLinear(
             args.dim,
@@ -381,25 +387,36 @@ class Attention(nn.Module):
             b_bytes = (int(compressor.bit_width) * int(compressor.block_size) + 7) // 8
             q_bytes = (int(compressor.block_size) + 7) // 8
 
-            # Slice, flatten, and bulk-move to GPU in one go (cache may be on CPU)
-            b_flat = c_bstring[:bsz, :cache_len].contiguous().reshape(-1, b_bytes)
-            q_flat = c_qjl[:bsz, :cache_len].contiguous().reshape(-1, q_bytes)
-            r_flat = c_res[:bsz, :cache_len].contiguous().reshape(-1)
-            o_flat = c_orig[:bsz, :cache_len].contiguous().reshape(-1)
+            c_bstring = c_bstring[:bsz, :cache_len]
+            c_qjl = c_qjl[:bsz, :cache_len]
+            c_res = c_res[:bsz, :cache_len]
+            c_orig = c_orig[:bsz, :cache_len]
+            slice_len = c_orig.shape[1]
+
+            b_flat = c_bstring.contiguous().reshape(-1, b_bytes)
+            q_flat = c_qjl.contiguous().reshape(-1, q_bytes)
+            r_flat = c_res.contiguous().reshape(-1)
+            o_flat = c_orig.contiguous().reshape(-1)
 
             output = compressor.decompress_chunk_tensor_direct(b_flat, q_flat, r_flat, o_flat)
-            return output.view(bsz, cache_len, self.n_local_kv_heads, compressor.block_size).to(target_dtype)
+            return output.view(bsz, slice_len, self.n_local_kv_heads, compressor.block_size).to(target_dtype)
 
         """Vectorized fetching: Converts cache slices to C-input in bulk."""
+        c_bstring = c_bstring[:bsz, :cache_len]
+        c_qjl = c_qjl[:bsz, :cache_len]
+        c_res = c_res[:bsz, :cache_len]
+        c_orig = c_orig[:bsz, :cache_len]
+        slice_len = c_orig.shape[1]
+
         # 1. Slice and flatten everything to CPU
-        o_flat = c_orig[:bsz, :cache_len].reshape(-1).cpu().tolist()
-        r_flat = c_res[:bsz, :cache_len].reshape(-1).cpu().tolist()
+        o_flat = c_orig.reshape(-1).cpu().tolist()
+        r_flat = c_res.reshape(-1).cpu().tolist()
 
         b_bytes = (int(compressor.bit_width) * int(compressor.block_size) + 7) // 8
         q_bytes = (int(compressor.block_size) + 7) // 8
 
-        b_flat = c_bstring[:bsz, :cache_len].contiguous().reshape(-1, b_bytes).cpu().numpy()
-        q_flat = c_qjl[:bsz, :cache_len].contiguous().reshape(-1, q_bytes).cpu().numpy()
+        b_flat = c_bstring.contiguous().reshape(-1, b_bytes).cpu().numpy()
+        q_flat = c_qjl.contiguous().reshape(-1, q_bytes).cpu().numpy()
 
         compressed_blocks = [
             (o_flat[i], r_flat[i], b_flat[i].tobytes(), q_flat[i].tobytes())
@@ -409,7 +426,7 @@ class Attention(nn.Module):
         decompressed_blocks = compressor.decompress_chunk(compressed_blocks)
         # 4. Stack and view back to (B, S, H, D)
         stacked = torch.stack(decompressed_blocks, dim=0).to(device=target_device, dtype=target_dtype)
-        return stacked.view(bsz, cache_len, self.n_local_kv_heads, compressor.block_size)
+        return stacked.view(bsz, slice_len, self.n_local_kv_heads, compressor.block_size)
 
     def attention(
             self,
@@ -434,6 +451,123 @@ class Attention(nn.Module):
         output = torch.matmul(scores, values)  # (bs, n_local_heads, seqlen, head_dim)
 
         return output
+
+    def _fetch_decompressed_cache_slice(
+        self,
+        compressor: Any,
+        c_bstring: torch.Tensor,
+        c_qjl: torch.Tensor,
+        c_orig: torch.Tensor,
+        c_res: torch.Tensor,
+        bsz: int,
+        start_pos: int,
+        end_pos: int,
+        target_device: torch.device,
+        target_dtype: torch.dtype,
+    ) -> torch.Tensor:
+        return self._fetch_decompressed_cache(
+            bsz,
+            end_pos - start_pos,
+            compressor,
+            c_bstring[:bsz, start_pos:end_pos],
+            c_qjl[:bsz, start_pos:end_pos],
+            c_orig[:bsz, start_pos:end_pos],
+            c_res[:bsz, start_pos:end_pos],
+            target_device,
+            target_dtype,
+        )
+
+    def _compute_mse(
+        self,
+        bsz: int,
+        seqlen: int,
+        start_pos: int,
+        xv: torch.Tensor,
+        xk: torch.Tensor,
+        xq: torch.Tensor
+    ) -> Tuple[float, float]:
+
+        end_pos = start_pos + seqlen
+        current_start = 0 if start_pos == 0 else start_pos
+
+        if self.is_mixed_precision:
+            k_dequant_out = self._fetch_decompressed_cache_slice(
+                self.outlier_compressor,
+                self.cache_k_bstring_outlier,
+                self.cache_k_qjl_outlier,
+                self.cache_k_orig_outlier,
+                self.cache_k_res_outlier,
+                bsz,
+                current_start,
+                end_pos,
+                xq.device,
+                xq.dtype,
+            )
+            k_dequant_norm = self._fetch_decompressed_cache_slice(
+                self.normal_compressor,
+                self.cache_k_bstring_normal,
+                self.cache_k_qjl_normal,
+                self.cache_k_orig_normal,
+                self.cache_k_res_normal,
+                bsz,
+                current_start,
+                end_pos,
+                xq.device,
+                xq.dtype,
+            )
+            v_dequant_out = self._fetch_decompressed_cache_slice(
+                self.outlier_compressor,
+                self.cache_v_bstring_outlier,
+                self.cache_v_qjl_outlier,
+                self.cache_v_orig_outlier,
+                self.cache_v_res_outlier,
+                bsz,
+                current_start,
+                end_pos,
+                xq.device,
+                xq.dtype,
+            )
+            v_dequant_norm = self._fetch_decompressed_cache_slice(
+                self.normal_compressor,
+                self.cache_v_bstring_normal,
+                self.cache_v_qjl_normal,
+                self.cache_v_orig_normal,
+                self.cache_v_res_normal,
+                bsz,
+                current_start,
+                end_pos,
+                xq.device,
+                xq.dtype,
+            )
+            k_dequant = torch.cat((k_dequant_out, k_dequant_norm), dim=-1)
+            v_dequant = torch.cat((v_dequant_out, v_dequant_norm), dim=-1)
+        else:
+            k_dequant = self._fetch_decompressed_cache_slice(
+                self.kv_cache_compressor,
+                self.cache_k_bstring,
+                self.cache_k_qjl,
+                self.cache_k_orig,
+                self.cache_k_res,
+                bsz,
+                current_start,
+                end_pos,
+                xq.device,
+                xq.dtype,
+            )
+            v_dequant = self._fetch_decompressed_cache_slice(
+                self.kv_cache_compressor,
+                self.cache_v_bstring,
+                self.cache_v_qjl,
+                self.cache_v_orig,
+                self.cache_v_res,
+                bsz,
+                current_start,
+                end_pos,
+                xq.device,
+                xq.dtype,
+            )
+
+        return mse(xk, k_dequant), mse(xv, v_dequant)
 
     def forward(
         self,
@@ -478,8 +612,10 @@ class Attention(nn.Module):
                 self._store_compressed_cache(xk_norm, bsz, seqlen, start_pos, self.normal_compressor, self.cache_k_bstring_normal, self.cache_k_qjl_normal, self.cache_k_orig_normal, self.cache_k_res_normal)
                 self._store_compressed_cache(xv_out, bsz, seqlen, start_pos, self.outlier_compressor, self.cache_v_bstring_outlier, self.cache_v_qjl_outlier, self.cache_v_orig_outlier, self.cache_v_res_outlier)
                 self._store_compressed_cache(xv_norm, bsz, seqlen, start_pos, self.normal_compressor, self.cache_v_bstring_normal, self.cache_v_qjl_normal, self.cache_v_orig_normal, self.cache_v_res_normal)
+
                 if start_pos > 0 and self.decode_cache_until < start_pos:
                     self._bootstrap_decode_cache(bsz, start_pos, xq.device, xq.dtype)
+
                 self.cache_k[:bsz, start_pos:cache_len] = xk
                 self.cache_v[:bsz, start_pos:cache_len] = xv
                 self.decode_cache_until = max(self.decode_cache_until, cache_len)
@@ -555,6 +691,12 @@ class Attention(nn.Module):
 
             output = self.attention(keys, values, xq, mask)
 
+        if self.use_mse:
+            k_mse, v_mse = self._compute_mse(bsz, seqlen, start_pos, xv, xk, xq)
+            token_count = bsz * seqlen
+            self.k_mse.setdefault(self.layer_n, []).append((k_mse, token_count))
+            self.v_mse.setdefault(self.layer_n, []).append((v_mse, token_count))
+
         output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
         result = self.wo(output)
 
@@ -598,6 +740,7 @@ class TransformerBlock(nn.Module):
         self.dim = args.dim
         self.head_dim = args.dim // args.n_heads
         self.attention = Attention(args,
+                                   layer_id,
                                    kv_cache_compressor=kv_cache_compressor,
                                    outlier_compressor=outlier_compressor,
                                    normal_compressor=normal_compressor

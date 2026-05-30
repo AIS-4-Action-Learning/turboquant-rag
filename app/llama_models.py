@@ -14,6 +14,7 @@ from app import (
     get_compressor_for_variant
 )
 from app.metrics import perplexity
+from app.metrics import rmse
 from llama_models.llama3.args import ModelArgs
 from llama_models.llama3.model import Transformer
 from llama_models.llama3.tokenizer import Tokenizer
@@ -176,12 +177,13 @@ class LlamaBF16(Llama):
 
 
 class LlamaCompressed(Llama):
-    def __init__(self, max_seq_length : int,
-                 batch_size : int,
-                 device : str = "cuda",
-                 is_batch : bool = True,
-                 bit_width : float = DEFAULT_BIT_WIDTH,
-                 dims : int = DEFAULT_DIMENSIONS):
+    def __init__(self, max_seq_length: int,
+                 batch_size: int,
+                 device: str = "cuda",
+                 is_batch: bool = True,
+                 bit_width: float = DEFAULT_BIT_WIDTH,
+                 dims: int = DEFAULT_DIMENSIONS,
+                 use_mse: bool = False):
         # Setup fairscale for single-process usage
         _setup_single_process_distributed(device)
 
@@ -190,12 +192,21 @@ class LlamaCompressed(Llama):
         self.bit_width = bit_width
         self.dims = dims
 
+        self.k_mse = None
+        self.v_mse = None
+
+        if use_mse:
+            self.k_mse = {}
+            self.v_mse = {}
+
         # Initialize model arguments (hyperparams, context window, and batch size)
         self.model_args = ModelArgs(
             **self.params,
             max_seq_len=max_seq_length,
             max_batch_size=batch_size,
-            use_compressed_kv_cache=True
+            use_compressed_kv_cache=True,
+            k_mse=self.k_mse,
+            v_mse=self.v_mse
         )
 
         # Use default context path if not set, looking in artifacts folder
@@ -333,7 +344,7 @@ class LlamaCompressed(Llama):
                 self.model.layers[i] = layer.to(device="cuda", dtype=torch.bfloat16)
 
             if device == "cuda":
-                torch.cuda.empty_cache() 
+                torch.cuda.empty_cache()
 
             # Move final Norm to CUDA
             self.model.norm = self.model.norm.to(device=device, dtype=torch.bfloat16)
@@ -347,7 +358,44 @@ class LlamaCompressed(Llama):
 
         self.model.eval()
 
+
 class LlamaGenerator:
+    @staticmethod
+    def _reset_mse(llama: LlamaBF16 | LlamaCompressed) -> None:
+        for attr in ("k_mse", "v_mse"):
+            mse_by_layer = getattr(llama, attr, None)
+            if mse_by_layer is not None:
+                mse_by_layer.clear()
+
+    @staticmethod
+    def _layer_mse(
+        samples: List[tuple[float, int]],
+    ) -> float:
+        total_count = sum(count for _, count in samples)
+        if total_count == 0:
+            return float("nan")
+
+        return sum(sample_mse * count for sample_mse, count in samples) / total_count
+
+    @staticmethod
+    def _report_mse(llama: LlamaBF16 | LlamaCompressed) -> None:
+        k_mse = getattr(llama, "k_mse", None)
+        v_mse = getattr(llama, "v_mse", None)
+        if not k_mse or not v_mse:
+            return
+
+        layer_k_mses = torch.tensor(
+            [LlamaGenerator._layer_mse(samples) for _, samples in sorted(k_mse.items())],
+            dtype=torch.float32,
+        )
+        layer_v_mses = torch.tensor(
+            [LlamaGenerator._layer_mse(samples) for _, samples in sorted(v_mse.items())],
+            dtype=torch.float32,
+        )
+
+        print(f"Key RMSE: {rmse(layer_k_mses)}")
+        print(f"Value RMSE: {rmse(layer_v_mses)}")
+
     def generate(self, tensor_tokens: torch.Tensor,
                  token_ids: Optional[List[int]],
                  llama: LlamaBF16 | LlamaCompressed,
@@ -355,7 +403,7 @@ class LlamaGenerator:
 
         try:
             generated_token = []
-            import torch
+            self._reset_mse(llama)
 
             with torch.no_grad():
                 current_pos = 0
@@ -368,7 +416,7 @@ class LlamaGenerator:
                     prefill_prompt = tensor_tokens[:, :-1].contiguous()
                     logits = llama.model.forward(prefill_prompt, start_pos=0)
 
-                    if token_ids != None:
+                    if token_ids is not None:
                         ppl = perplexity(logits, token_ids)
                         print(f"Perplexity: {ppl}")
 
@@ -379,7 +427,7 @@ class LlamaGenerator:
 
                 current_token = tensor_tokens[:, -1:].contiguous()
 
-                for i in range(max_gen_len):
+                for _ in range(max_gen_len):
                     logits = llama.model.forward(current_token, current_pos)
 
                     next_token = torch.argmax(logits[:, -1], dim=-1)
@@ -396,6 +444,8 @@ class LlamaGenerator:
             for tok in ("<|eot_id|>", "<|eos_id|>", "<|end_of_text|>",
                     "  Special", "  Token"):
                 response = response.replace(tok, "")
+
+            self._report_mse(llama)
 
             return response.strip()
         except Exception:
