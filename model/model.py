@@ -613,13 +613,6 @@ class Attention(nn.Module):
                 self._store_compressed_cache(xv_out, bsz, seqlen, start_pos, self.outlier_compressor, self.cache_v_bstring_outlier, self.cache_v_qjl_outlier, self.cache_v_orig_outlier, self.cache_v_res_outlier)
                 self._store_compressed_cache(xv_norm, bsz, seqlen, start_pos, self.normal_compressor, self.cache_v_bstring_normal, self.cache_v_qjl_normal, self.cache_v_orig_normal, self.cache_v_res_normal)
 
-                if start_pos > 0 and self.decode_cache_until < start_pos:
-                    self._bootstrap_decode_cache(bsz, start_pos, xq.device, xq.dtype)
-
-                self.cache_k[:bsz, start_pos:cache_len] = xk
-                self.cache_v[:bsz, start_pos:cache_len] = xv
-                self.decode_cache_until = max(self.decode_cache_until, cache_len)
-
                 if start_pos > 0:
                     output = self.outlier_compressor.mixed_fused_attention(
                         self.normal_compressor,
