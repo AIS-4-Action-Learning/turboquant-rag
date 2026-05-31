@@ -1,7 +1,9 @@
-import torch
-import torch.nn.functional as F
 from typing import List
 
+import torch
+import torch.nn.functional as F
+
+from rag_library.embedder import Embedder
 
 def perplexity(
     logits: torch.Tensor,   # (1, seq_len, vocab_size) or (seq_len, vocab_size)
@@ -42,6 +44,45 @@ def rmse(mses: torch.Tensor) -> float:
 
 
 def zero_shot_accuracy(
-    logits: torch.Tensor,
-    label: List[str]) -> float:
-    return 0.0
+    fqa_accuracy: float,
+    oosqa_accuracy: float,
+    crqa_accuracy: float
+) -> float:
+    return (fqa_accuracy + oosqa_accuracy + crqa_accuracy) / 3
+
+
+def eval_correctness(
+    predicted_answer: str,
+    ground_truth_answer: str,
+    embedding_model: Embedder,
+    threshold: float = 0.82
+) -> float:
+    if not predicted_answer.strip():
+        return 0.0
+
+    try:
+        embd = embedding_model.embed([predicted_answer, ground_truth_answer])
+
+        pred_tensor = torch.tensor(embd[0], dtype=torch.float32).flatten()
+        gt_tensor = torch.tensor(embd[1], dtype=torch.float32).flatten()
+
+        similarity = F.cosine_similarity(pred_tensor.unsqueeze(0), gt_tensor.unsqueeze(0)).item()
+
+        return 1.0 if similarity >= threshold else 0.0
+    except Exception as e:
+        raise RuntimeError(f"Failed to obtain evaluation result. Reason: {e}")
+
+
+def question_answering_accuracy(
+    results: torch.Tensor
+) -> float:
+    if results.numel() == 0:
+        return -1.0
+
+    try:
+        flat_results = results.flatten()
+        n_total = flat_results.shape[0]
+        n_accurate = results.count_nonzero().item()
+        return float(n_accurate / n_total)
+    except Exception as e:
+        raise RuntimeError(f"Failed to obtain question answering accuracy. Reason: {e}")
