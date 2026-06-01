@@ -365,6 +365,11 @@ class Experiment:
             RuntimeError: If a trial or result persistence fails.
         """
         try:
+            print("=" * 15)
+            print("RUNNING TURBOQUANT BENCHMARKING EXPERIMENT")
+            print(f"CONFIGURATION: {self.bit_width}")
+            print("=" * 15)
+
             self.trials_results = pd.DataFrame(columns=self.TRIALS_SCHEMA)
             evals: dict[str, dict[int, float]] = {
                 "fqa_evals": {},
@@ -377,6 +382,10 @@ class Experiment:
                 question_data = self.questions[index]
                 question = question_data["question"]
                 category = question_data["category"]
+
+                print(f"----- TRIAL {index + 1} -----")
+                print(f"Question Category: {category}")
+                print("Running...")
                 expected_answer = self._get_expected_answer(category, index)
 
                 response = self.rag.query(question, top_k)
@@ -401,6 +410,8 @@ class Experiment:
                     rmse_k=response["rmse_k"],
                     rmse_v=response["rmse_v"],
                 )
+                print(f"Evaluation: {evaluation}")
+                print("-" * 15)
 
             self._log_experiment(evals)
             self.trials_results.to_csv(self.trial_results_path, index=False)
