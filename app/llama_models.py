@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from typing import List, Any, Optional, Tuple
 
+from numpy import isin
 import torch
 import json
 
@@ -378,11 +379,11 @@ class LlamaGenerator:
         return sum(sample_mse * count for sample_mse, count in samples) / total_count
 
     @staticmethod
-    def _report_mse(llama: LlamaBF16 | LlamaCompressed) -> None:
+    def _report_rmse(llama: LlamaBF16 | LlamaCompressed) -> Tuple[float, float]:
         k_mse = getattr(llama, "k_mse", None)
         v_mse = getattr(llama, "v_mse", None)
         if not k_mse or not v_mse:
-            return
+            return -1.0, -1.0
 
         layer_k_mses = torch.tensor(
             [LlamaGenerator._layer_mse(samples) for _, samples in sorted(k_mse.items())],
@@ -393,15 +394,15 @@ class LlamaGenerator:
             dtype=torch.float32,
         )
 
-        print(f"Key RMSE: {rmse(layer_k_mses)}")
-        print(f"Value RMSE: {rmse(layer_v_mses)}")
+        return rmse(layer_k_mses), rmse(layer_v_mses)
 
     def generate(self, tensor_tokens: torch.Tensor,
                  token_ids: Optional[List[int]],
                  llama: LlamaBF16 | LlamaCompressed,
-                 max_gen_len: int = 1024) -> str:
+                 max_gen_len: int = 1024) -> Tuple[str, float, float, float] | Tuple[str, float, None, None]:
 
         try:
+            ppl = -1.0
             generated_token = []
             self._reset_mse(llama)
 
@@ -418,7 +419,6 @@ class LlamaGenerator:
 
                     if token_ids is not None:
                         ppl = perplexity(logits, token_ids)
-                        print(f"Perplexity: {ppl}")
 
                     current_pos = seq_len - 1
 
@@ -445,13 +445,14 @@ class LlamaGenerator:
                     "  Special", "  Token"):
                 response = response.replace(tok, "")
 
-            self._report_mse(llama)
+            if isinstance(llama, "LlamaCompressed"):
+                rmse_k, rmse_v = self._report_rmse(llama)
+                return response.strip(), ppl, rmse_k, rmse_v
+            elif isinstance(llama, "LlamaBF16"):
+                return response.strip(), ppl, None, None
 
-            return response.strip()
-        except Exception:
-            import traceback
-            traceback.print_exc()
-            return ""
+        except Exception as e:
+            raise RuntimeError(f"Failed to generate response. Reason: {e}")
 
 
 

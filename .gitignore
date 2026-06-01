@@ -229,7 +229,7 @@ debug/
 # --- rag library-specific ---
 
 # Data files (large PDFs and processed corpora)
-data/
+# data/
 
 # FAISS indexes (regeneratable from corpus.json)
 *.faiss

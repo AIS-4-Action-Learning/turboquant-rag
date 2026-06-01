@@ -170,12 +170,18 @@ class RAG:
         """
         retrieved = self.retrieve(query, k=k)
         context = self._format_context(retrieved)
-        answer = self.generator.generate(query, context, omit_sysprompt)
+        answer, ppl, rmse_k, rmse_v = self.generator.generate(
+            query,
+            context,
+            omit_sysprompt)
 
         return {
             "query": query,
             "answer": answer,
             "retrieved": retrieved,
+            "perplexity": ppl,
+            "rmse_k": rmse_k,
+            "rmse_v": rmse_v
         }
 
     # ---------------------------------------------------------------------

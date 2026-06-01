@@ -1,0 +1,1 @@
+experiment_id, bit_width, group_size, mean_perplexity, mean_rmse_key, mean_rmse_value, fqa_accuracy, oosqa_accuracy, crqa_accuracy, zero_shot_accuracy 

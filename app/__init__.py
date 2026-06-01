@@ -27,6 +27,8 @@ CONTEXT_PATH = os.getenv("CONTEXT_PATH", "")
 LIB_PATH = os.getenv("LIB_PATH", "")
 TURBOQUANT_ROOT = Path(os.getenv("TURBOQUANT_ROOT", PROJECT_ROOT.parent / "TurboQuantQuantization"))
 
+N_TRIALS = 40
+
 # TurboQuant variant configuration
 TURBOQUANT_VARIANT = os.getenv("TURBOQUANT_VARIANT", "auto")
 
