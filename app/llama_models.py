@@ -445,10 +445,10 @@ class LlamaGenerator:
                     "  Special", "  Token"):
                 response = response.replace(tok, "")
 
-            if isinstance(llama, "LlamaCompressed"):
+            if isinstance(llama, LlamaCompressed):
                 rmse_k, rmse_v = self._report_rmse(llama)
                 return response.strip(), ppl, rmse_k, rmse_v
-            elif isinstance(llama, "LlamaBF16"):
+            elif isinstance(llama, LlamaBF16):
                 return response.strip(), ppl, None, None
 
         except Exception as e:
