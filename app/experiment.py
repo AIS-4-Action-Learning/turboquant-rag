@@ -1,6 +1,7 @@
 """Experiment runner for TurboQuant RAG evaluations."""
 
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -377,8 +378,10 @@ class Experiment:
                 "oosqa_evals": {},
             }
             trial_count = min(N_TRIALS, len(self.questions))
+            trial_durations: list[float] = []
 
             for index in range(trial_count):
+                trial_start_time = time.perf_counter()
                 question_data = self.questions[index]
                 question = question_data["question"]
                 category = question_data["category"]
@@ -410,7 +413,21 @@ class Experiment:
                     rmse_k=response["rmse_k"],
                     rmse_v=response["rmse_v"],
                 )
+                trial_duration = time.perf_counter() - trial_start_time
+                trial_durations.append(trial_duration)
+                average_trial_duration = sum(trial_durations) / len(
+                    trial_durations
+                )
+                remaining_trials = trial_count - len(trial_durations)
+                estimated_time_left = average_trial_duration * remaining_trials
+
                 print(f"Evaluation: {evaluation}")
+                print(
+                    "Timing: "
+                    f"trial={trial_duration / 60:.2f} min, "
+                    f"avg={average_trial_duration / 60:.2f} min, "
+                    f"time_left={estimated_time_left / 60:.2f} min"
+                )
                 print("-" * 15)
 
             self._log_experiment(evals)
