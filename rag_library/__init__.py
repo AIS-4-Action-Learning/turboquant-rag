@@ -1,74 +1,52 @@
 """
 rag_library — A modular RAG pipeline for the TurboQuant research benchmarks.
 
-Public API:
-    RAG: The main orchestrator class.
-    Chunker: Splits a corpus into chunks.
-    VectorStore: FAISS-backed similarity search.
-
-    Generators (swappable):
-        Generator                — abstract base class
-        OpenAIGenerator          — OpenAI chat completion (paid)
-        GeminiGenerator          — Google Gemini (free tier, recommended for prototyping)
-        BF16LlamaGenerator       — Llama 3.1 8B BF16 (research baseline) [stub]
-        TurboQuantLlamaGenerator — Llama 3.1 8B + TurboQuant (research) [stub]
-
-    Embedders (swappable):
-        Embedder                — abstract base class
-        OpenAIEmbedder          — OpenAI text-embedding-3-small (paid)
-        GeminiEmbedder          — Gemini embedding-001 (free tier, recommended)
-
-Example usage:
-
-    # Recommended for prototyping: Gemini (free, no credit card)
-    >>> from google import genai
-    >>> from rag_library import RAG, GeminiEmbedder, GeminiGenerator
-    >>> client = genai.Client(api_key="...")  # or set GEMINI_API_KEY env var
-    >>> rag = RAG(
-    ...     embedder=GeminiEmbedder(client),
-    ...     generator=GeminiGenerator(client),
-    ... )
-    >>> rag.build_index("data/corpus.json")
-    >>> result = rag.query("What is backpropagation?")
-    >>> print(result["answer"])
-
-    # Llama generators still work for answering, but retrieval uses
-    # a pretrained embedder (Gemini/OpenAI) for semantic search.
+The package exposes a lazy public API so importing one submodule does not
+force the whole stack to load. That keeps optional dependencies isolated:
+embedding-only paths do not need the Llama stack, and generator-only paths do
+not need embedding backends until they are actually used.
 """
 
-from .chunker import Chunker
-from .embedder import (
-    Embedder,
-    OpenAIEmbedder,
-    GeminiEmbedder,
-    BGEmbedder
-)
-from .generator import (
-    Generator,
-    OpenAIGenerator,
-    GeminiGenerator,
-    BF16LlamaGenerator,
-    TurboQuantLlamaGenerator,
-)
-from .rag import RAG
-from .vector_store import VectorStore
+from importlib import import_module
 
 __all__ = [
-    # Main entry point
     "RAG",
-    # Chunking
     "Chunker",
-    # Vector store
     "VectorStore",
-    # Generators
     "Generator",
     "OpenAIGenerator",
     "GeminiGenerator",
     "BF16LlamaGenerator",
     "TurboQuantLlamaGenerator",
-    # Embedders
     "Embedder",
     "OpenAIEmbedder",
     "GeminiEmbedder",
-    "BGEmbedder"
+    "BGEmbedder",
 ]
+
+_EXPORTS = {
+    "RAG": ("rag_library.rag", "RAG"),
+    "Chunker": ("rag_library.chunker", "Chunker"),
+    "VectorStore": ("rag_library.vector_store", "VectorStore"),
+    "Generator": ("rag_library.generator", "Generator"),
+    "OpenAIGenerator": ("rag_library.generator", "OpenAIGenerator"),
+    "GeminiGenerator": ("rag_library.generator", "GeminiGenerator"),
+    "BF16LlamaGenerator": ("rag_library.generator", "BF16LlamaGenerator"),
+    "TurboQuantLlamaGenerator": ("rag_library.generator", "TurboQuantLlamaGenerator"),
+    "Embedder": ("rag_library.embedder", "Embedder"),
+    "OpenAIEmbedder": ("rag_library.embedder", "OpenAIEmbedder"),
+    "GeminiEmbedder": ("rag_library.embedder", "GeminiEmbedder"),
+    "BGEmbedder": ("rag_library.embedder", "BGEmbedder"),
+}
+
+
+def __getattr__(name):
+    try:
+        module_name, attr_name = _EXPORTS[name]
+    except KeyError as exc:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+
+    module = import_module(module_name)
+    value = getattr(module, attr_name)
+    globals()[name] = value
+    return value

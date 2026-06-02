@@ -1,9 +1,11 @@
 from typing import List
+from typing import TYPE_CHECKING
 
 import torch
 import torch.nn.functional as F
 
-from rag_library.embedder import Embedder
+if TYPE_CHECKING:
+    from rag_library.embedder import Embedder
 
 def perplexity(
     logits: torch.Tensor,   # (1, seq_len, vocab_size) or (seq_len, vocab_size)
@@ -54,7 +56,7 @@ def zero_shot_accuracy(
 def eval_correctness(
     predicted_answer: str,
     ground_truth_answer: str,
-    embedding_model: Embedder,
+    embedding_model: "Embedder",
     threshold: float = 0.82
 ) -> float:
     if not predicted_answer.strip():
