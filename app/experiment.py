@@ -400,11 +400,16 @@ class Experiment:
                     f"Response: {response['answer']}"
                 )
 
+                for i, chunk in enumerate(response["retrieved"], 1):
+                    print(f" {i}. [score={chunk['score']:.4f}] {chunk['source']} p.{chunk['page']}")
+                    print(f" {chunk['text'][:120]}...")
+
                 evaluation = eval_correctness(
                     response["answer"],
                     expected_answer,
                     self.embedder,
                 )
+
                 self._set_evaluation(category, evaluation, index, evals)
                 self._log_trial(
                     index=index,
