@@ -228,7 +228,7 @@ You must:
 Answer based only on the provided context, if the question is not very specific to the context, reply asking for clarification. Other wise:
 1. Be concise and accurate.
 2. Cite your sources (document name and page number).
-3. If the question is out of scope, politely decline.
+3. If the question is not related to deep learning, politely decline.
 """
 
     def _format_prompt(self, query: str, context: str, omit_sysprompt: bool) -> str:

@@ -466,7 +466,7 @@ def format_prompt(prompt: str, context: str, sysprompt: str) -> str:
 Context from the knowledge base:
 {context}
 
-Please answer the question using the provided context. Include source citations."""
+Answer the question using the provided context only. Include source citations."""
 
 
         # Llama 3.1 chat template (IDs: <|begin_of_text|>=128000,
