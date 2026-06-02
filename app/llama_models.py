@@ -413,8 +413,8 @@ class LlamaGenerator:
                 # Warmup loop for compressed KV cache
                 if seq_len > 1:
 
-                    # Keep full-prompt logits on CPU; only the model internals need CUDA.
-                    prefill_prompt = tensor_tokens[:, :-1].cpu().contiguous()
+                    # Pass all prompt tokens up to the second-to-last one simultaneously.
+                    prefill_prompt = tensor_tokens[:, :-1].contiguous()
                     logits = llama.model.forward(prefill_prompt, start_pos=0)
 
                     if token_ids is not None:
