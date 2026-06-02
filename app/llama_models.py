@@ -460,10 +460,6 @@ class LlamaGenerator:
 
 
 def format_prompt(prompt: str, context: str, sysprompt: str) -> str:
-        user_content = (
-            f"Context:\n{context}\n\n"
-            f"Question: {prompt}"
-        )
         user_content = f"""Question: {prompt}
 
 Context from the knowledge base:
