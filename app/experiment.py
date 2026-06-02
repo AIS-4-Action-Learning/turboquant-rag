@@ -75,6 +75,7 @@ class Experiment:
         trial_results_path: str = "results/trial_results.csv",
         experiment_results_path: str = "results/experiment_results.csv",
         chunk: bool = False,
+        n_trials: int = N_TRIALS
     ) -> None:
         """Initialize the experiment and prepare the RAG pipeline.
 
@@ -102,6 +103,7 @@ class Experiment:
             self.corpus_path = Path(corpus_path)
             self.trial_results_path = Path(trial_results_path)
             self.experiment_results_path = Path(experiment_results_path)
+            self.n_trials = n_trials
 
             self.generator = self._build_generator(max_gen_len)
             self.rag = RAG(
@@ -377,7 +379,7 @@ class Experiment:
                 "crqa_evals": {},
                 "oosqa_evals": {},
             }
-            trial_count = min(N_TRIALS, len(self.questions))
+            trial_count = min(self.n_trials, len(self.questions))
             trial_durations: list[float] = []
 
             for index in range(trial_count):
@@ -421,6 +423,9 @@ class Experiment:
                 remaining_trials = trial_count - len(trial_durations)
                 estimated_time_left = average_trial_duration * remaining_trials
 
+                print(f"RMSE Key: {response["rmse_k"]}")
+                print(f"RMSE Value: {response["rmse_v"]}")
+                print(f"Perplexity: {response["perplexity"]}")
                 print(f"Evaluation: {evaluation}")
                 print(
                     "Timing: "
