@@ -370,13 +370,16 @@ class LlamaGenerator:
 
     @staticmethod
     def _layer_mse(
-        samples: List[tuple[float, int]],
-    ) -> float:
+        samples: List[tuple[torch.Tensor, int]],
+    ) -> torch.Tensor:
         total_count = sum(count for _, count in samples)
         if total_count == 0:
-            return float("nan")
+            return torch.tensor(float("nan"), dtype=torch.float32)
 
-        return sum(sample_mse * count for sample_mse, count in samples) / total_count
+        weighted_mses = torch.stack(
+            [sample_mse.float() * count for sample_mse, count in samples]
+        )
+        return weighted_mses.sum() / total_count
 
     @staticmethod
     def _report_rmse(llama: LlamaBF16 | LlamaCompressed) -> Tuple[float, float]:
@@ -385,13 +388,11 @@ class LlamaGenerator:
         if not k_mse or not v_mse:
             return -1.0, -1.0
 
-        layer_k_mses = torch.tensor(
+        layer_k_mses = torch.stack(
             [LlamaGenerator._layer_mse(samples) for _, samples in sorted(k_mse.items())],
-            dtype=torch.float32,
         )
-        layer_v_mses = torch.tensor(
+        layer_v_mses = torch.stack(
             [LlamaGenerator._layer_mse(samples) for _, samples in sorted(v_mse.items())],
-            dtype=torch.float32,
         )
 
         return rmse(layer_k_mses), rmse(layer_v_mses)
@@ -432,11 +433,12 @@ class LlamaGenerator:
                     logits = llama.model.forward(current_token, current_pos)
 
                     next_token = torch.argmax(logits[:, -1], dim=-1)
+                    next_token_id = next_token.item()
 
-                    if next_token.item() == llama.tokenizer.eos_id:
+                    if next_token_id == llama.tokenizer.eos_id:
                         break
 
-                    generated_token.append(next_token.item())
+                    generated_token.append(next_token_id)
 
                     current_token = next_token.unsqueeze(0)
                     current_pos += logits.shape[1]

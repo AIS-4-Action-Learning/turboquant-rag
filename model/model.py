@@ -20,7 +20,6 @@ from fairscale.nn.model_parallel.layers import (
     VocabParallelEmbedding,
 )
 from torch import nn
-from app.metrics import mse
 
 from .args import ModelArgs
 
@@ -485,12 +484,17 @@ class Attention(nn.Module):
         xv: torch.Tensor,
         xk: torch.Tensor,
         xq: torch.Tensor
-    ) -> Tuple[float, float]:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
 
         end_pos = start_pos + seqlen
         current_start = 0 if start_pos == 0 else start_pos
 
         if self.is_mixed_precision:
+            xk_out = xk[..., :self.outlier_dim]
+            xk_norm = xk[..., self.outlier_dim:]
+            xv_out = xv[..., :self.outlier_dim]
+            xv_norm = xv[..., self.outlier_dim:]
+
             k_dequant_out = self._fetch_decompressed_cache_slice(
                 self.outlier_compressor,
                 self.cache_k_bstring_outlier,
@@ -539,8 +543,20 @@ class Attention(nn.Module):
                 xq.device,
                 xq.dtype,
             )
-            k_dequant = torch.cat((k_dequant_out, k_dequant_norm), dim=-1)
-            v_dequant = torch.cat((v_dequant_out, v_dequant_norm), dim=-1)
+
+            dim_total = xk.shape[-1]
+            dim_out = xk_out.shape[-1]
+            dim_norm = xk_norm.shape[-1]
+
+            k_mse_out = (xk_out.float() - k_dequant_out.float()).square().mean()
+            k_mse_norm = (xk_norm.float() - k_dequant_norm.float()).square().mean()
+            v_mse_out = (xv_out.float() - v_dequant_out.float()).square().mean()
+            v_mse_norm = (xv_norm.float() - v_dequant_norm.float()).square().mean()
+
+            k_mse = ((dim_out * k_mse_out) + (dim_norm * k_mse_norm)) / dim_total
+            v_mse = ((dim_out * v_mse_out) + (dim_norm * v_mse_norm)) / dim_total
+
+            del k_dequant_out, k_dequant_norm, v_dequant_out, v_dequant_norm
         else:
             k_dequant = self._fetch_decompressed_cache_slice(
                 self.kv_cache_compressor,
@@ -567,12 +583,10 @@ class Attention(nn.Module):
                 xq.dtype,
             )
 
-        k_mse = mse(xk, k_dequant)
-        v_mse = mse(xv, v_dequant)
+            k_mse = (xk.float() - k_dequant.float()).square().mean()
+            v_mse = (xv.float() - v_dequant.float()).square().mean()
 
-        if self.is_mixed_precision:
-            del k_dequant_out, k_dequant_norm, v_dequant_out, v_dequant_norm
-        del k_dequant, v_dequant
+            del k_dequant, v_dequant
 
         return k_mse, v_mse
 
