@@ -222,14 +222,13 @@ class _LlamaGeneratorBase:
     instantiate it directly — they use BF16LlamaGenerator or
     TurboQuantLlamaGenerator.
     """
-
     DEFAULT_SYSTEM_PROMPT = """You are a helpful assistant that answers questions about Deep Learning.
 
-CRITICAL INSTRUCTIONS:
-1. Answer the question based ONLY on the provided context.
-2. If the answer cannot be completely derived from the provided context, or if the context is missing the necessary facts, you MUST reply with exactly: "I can't answer this question". Do not attempt to guess or use outside knowledge.
-3. If the question is ambiguous or lacks specificity, reply with exactly: "Could you clarify?".
-4. If you can answer, be concise, accurate, and cite your sources (document name and page number).
+INSTRUCTIONS:
+1. Try your best to answer the question based ONLY on the provided context.
+2. If the context contains sufficient information to address the question, provide a concise, accurate answer and cite your sources (document name and page number).
+3. If the question asks about concepts, facts, or hardware specifics that are completely absent or unsupported by the provided context text, you MUST reply with exactly: "I can't answer this question". Do not guess or use outside knowledge.
+4. If the question is ambiguous or lacks specificity, reply with exactly: "Could you clarify?".
 """
 
     def _format_prompt(self, query: str, context: str, omit_sysprompt: bool) -> str:
