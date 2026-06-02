@@ -567,7 +567,14 @@ class Attention(nn.Module):
                 xq.dtype,
             )
 
-        return mse(xk, k_dequant), mse(xv, v_dequant)
+        k_mse = mse(xk, k_dequant)
+        v_mse = mse(xv, v_dequant)
+
+        if self.is_mixed_precision:
+            del k_dequant_out, k_dequant_norm, v_dequant_out, v_dequant_norm
+        del k_dequant, v_dequant
+
+        return k_mse, v_mse
 
     def forward(
         self,
@@ -824,7 +831,7 @@ class Transformer(nn.Module):
 
         mask = None
         if seqlen > 1:
-            mask = torch.full((seqlen, seqlen), float("-inf"), device=tokens.device)
+            mask = torch.full((seqlen, seqlen), float("-inf"), device=h.device)
             mask = torch.triu(mask, diagonal=1)
 
             # https://github.com/pytorch/pytorch/issues/100005
@@ -837,7 +844,7 @@ class Transformer(nn.Module):
             # only for the new sequence. Thus, the matrix of scores is of size
             # (seqlen, cache_len + seqlen), and the only masked entries are (i, j) for
             # j > cache_len + i, since row i corresponds to token cache_len + i.
-            mask = torch.hstack([torch.zeros((seqlen, start_pos), device=tokens.device), mask]).type_as(h)
+            mask = torch.hstack([torch.zeros((seqlen, start_pos), device=h.device), mask]).type_as(h)
 
         for layer in self.layers:
             h = layer(h, start_pos, freqs_cis, mask)
