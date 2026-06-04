@@ -1,0 +1,323 @@
+"""
+Generator interface and implementations.
+
+A Generator takes a user query and retrieved context, and produces an answer.
+This is the component that gets swapped between OpenAI, Gemini, BF16 Llama,
+and TurboQuant-compressed Llama for our research benchmarks.
+
+Class hierarchy:
+    Generator (ABC)
+    ├── OpenAIGenerator
+    ├── GeminiGenerator
+    ├── BF16LlamaGenerator      ──┐
+    └── TurboQuantLlamaGenerator ──┴── both inherit shared logic from _LlamaGeneratorBase
+"""
+
+import time
+from abc import ABC, abstractmethod
+
+
+# ---------------------------------------------------------------------------
+# Public abstract base class
+# ---------------------------------------------------------------------------
+
+class Generator(ABC):
+    """Abstract base class for answer generators.
+
+    Any concrete generator must inherit from this class and implement
+    the `generate` method.
+    """
+
+    @abstractmethod
+    def generate(self, query: str, context: str) -> str:
+        """Generate an answer given a query and retrieved context.
+
+        Args:
+            query: The user's question.
+            context: Concatenated retrieved chunks, formatted for the model.
+
+        Returns:
+            The generated answer as a string.
+        """
+        pass
+
+
+# ---------------------------------------------------------------------------
+# OpenAI implementation
+# ---------------------------------------------------------------------------
+
+class OpenAIGenerator(Generator):
+    """Generator that uses OpenAI's chat completion API.
+
+    Used for prototyping and as a sanity-check baseline.
+    Llama-based generators below will be used for the research benchmarks.
+    """
+
+    def __init__(
+        self,
+        client,
+        model: str = "gpt-4o-mini",
+        temperature: float = 0,
+        max_tokens: int = 500,
+        cost_tracker=None,
+    ):
+        """
+        Args:
+            client: An initialized OpenAI client (passed in, not created here).
+            model: The OpenAI model name to use.
+            temperature: Sampling temperature (0 for deterministic).
+            max_tokens: Maximum tokens in the response.
+            cost_tracker: Optional callable that takes the response object to
+                          track API costs. Pass None to disable.
+        """
+        self.client = client
+        self.model = model
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.cost_tracker = cost_tracker
+
+        self.system_prompt = """You are a helpful assistant.
+
+        Answer the question based STRICTLY on the provided context.
+
+        Rules:
+        - If the context doesn't contain the answer, say 'I don't have enough information to answer this.'
+        - Always cite which source your answer comes from using the format: (Source: <filename>, Page <number>).
+        - Use the context to answer, applying reasonable inference.
+        - If the answer comes from multiple chunks/sources, combine and cite all of them.
+        - If the question is yes/no, answer with only 'Yes' or 'No'
+        - If the question asks what NOT to do, infer the answer from what the context has
+        """
+
+    def generate(self, query: str, context: str) -> str:
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"},
+            ],
+            temperature=self.temperature,
+            max_tokens=self.max_tokens,
+        )
+
+        if self.cost_tracker is not None:
+            self.cost_tracker(response)
+
+        return response.choices[0].message.content
+
+
+# ---------------------------------------------------------------------------
+# Gemini implementation (Google's free-tier-friendly API)
+# ---------------------------------------------------------------------------
+
+class GeminiGenerator(Generator):
+    """Generator that uses Google's Gemini API.
+
+    Gemini has a genuinely free tier (no credit card, no expiration), making
+    it the best option for team prototyping without any out-of-pocket cost.
+
+    Defaults to `gemini-2.5-flash-lite` because it has the most generous free
+    rate limits (15 RPM, 1000 requests/day). Switch to `gemini-2.5-flash` or
+    `gemini-2.5-pro` for higher-quality responses (with lower daily caps).
+
+    NOTE: requests are rate-limited automatically by sleeping between calls
+    to stay under the per-minute RPM cap.
+    """
+
+    # Conservative defaults (one request every ~4.5s) keep us safely under the
+    # 15 RPM free-tier ceiling. Override in the constructor if needed.
+    DEFAULT_MIN_INTERVAL_SECONDS = 4.5
+
+    def __init__(
+        self,
+        client,
+        model: str = "gemini-2.5-flash-lite",
+        temperature: float = 0,
+        max_tokens: int = 500,
+        min_interval_seconds: float = DEFAULT_MIN_INTERVAL_SECONDS,
+    ):
+        """
+        Args:
+            client: An initialized google.genai.Client (passed in, not created
+                    here — same pattern as OpenAIGenerator).
+            model: Gemini model name. Free-tier options:
+                   - "gemini-2.5-flash-lite" (15 RPM, 1000/day — fastest free)
+                   - "gemini-2.5-flash"      (10 RPM, 250/day  — better quality)
+                   - "gemini-2.5-pro"        (5 RPM, 100/day   — best quality)
+            temperature: Sampling temperature (0 for deterministic).
+            max_tokens: Maximum tokens in the response.
+            min_interval_seconds: Minimum seconds between requests. Default
+                                  4.5s keeps us under 15 RPM for Flash-Lite.
+                                  Increase if using lower-RPM models.
+        """
+        self.client = client
+        self.model = model
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.min_interval_seconds = min_interval_seconds
+        self._last_request_time = 0.0
+
+        # System prompt is identical to OpenAIGenerator's — kept aligned so
+        # behavior is comparable across baselines.
+        self.system_prompt = """You are a helpful assistant.
+
+        Answer the question based STRICTLY on the provided context.
+
+        Rules:
+        - If the context doesn't contain the answer, say 'I don't have enough information to answer this.'
+        - Always cite which source your answer comes from using the format: (Source: <filename>, Page <number>).
+        - Use the context to answer, applying reasonable inference.
+        - If the answer comes from multiple chunks/sources, combine and cite all of them.
+        - If the question is yes/no, answer with only 'Yes' or 'No'
+        - If the question asks what NOT to do, infer the answer from what the context has
+        """
+
+    def _throttle(self) -> None:
+        """Sleep if needed to respect the per-minute rate limit."""
+        elapsed = time.time() - self._last_request_time
+        if elapsed < self.min_interval_seconds:
+            time.sleep(self.min_interval_seconds - elapsed)
+        self._last_request_time = time.time()
+
+    def generate(self, query: str, context: str) -> str:
+        # Gemini doesn't have a separate "system message" role like OpenAI;
+        # we prepend the system prompt to the user content.
+        prompt = (
+            f"{self.system_prompt}\n\n"
+            f"Context:\n{context}\n\n"
+            f"Question: {query}"
+        )
+
+        self._throttle()
+
+        # Lazy import so the SDK is only required when actually used.
+        from google.genai import types
+
+        response = self.client.models.generate_content(
+            model=self.model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=self.temperature,
+                max_output_tokens=self.max_tokens,
+            ),
+        )
+
+        return response.text
+
+
+# ---------------------------------------------------------------------------
+# Shared base for Llama-based generators
+# ---------------------------------------------------------------------------
+
+class _LlamaGeneratorBase:
+    """Shared logic for Llama-based generators (BF16 and TurboQuant).
+
+    Holds prompt formatting and any other code that doesn't depend on the
+    inference path. Concrete subclasses below differ in how they actually
+    run the model.
+
+    NOTE: This is a private helper (leading underscore). Users should not
+    instantiate it directly — they use BF16LlamaGenerator or
+    TurboQuantLlamaGenerator.
+    """
+
+    DEFAULT_SYSTEM_PROMPT = """You are a helpful assistant.
+
+    Answer the question based STRICTLY on the provided context.
+
+    Rules:
+    - If the context doesn't contain the answer, say 'I don't have enough information to answer this.'
+    - Always cite which source your answer comes from using the format: (Source: <filename>, Page <number>).
+    - Use the context to answer, applying reasonable inference.
+    - If the answer comes from multiple chunks/sources, combine and cite all of them.
+    - If the question is yes/no, answer with only 'Yes' or 'No'
+    - If the question asks what NOT to do, infer the answer from what the context has
+    """
+
+    def _format_prompt(self, query: str, context: str) -> str:
+        """Format query + context into a single prompt string for Llama.
+
+        TODO (when implementing): wrap with the actual Llama 3.1 chat template
+        once we settle on the inference framework (HuggingFace transformers,
+        llama.cpp, vLLM, etc.).
+        """
+        return (
+            f"{self.system_prompt}\n\n"
+            f"Context:\n{context}\n\n"
+            f"Question: {query}\n\n"
+            f"Answer:"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Llama BF16 (baseline) — STUB, to be implemented
+# ---------------------------------------------------------------------------
+
+class BF16LlamaGenerator(_LlamaGeneratorBase, Generator):
+    """Generator using BF16 (uncompressed) Llama 3.1 8B.
+
+    This is the BASELINE for our TurboQuant research. It runs Llama 3.1 8B
+    at full BF16 precision, no compression. Used to establish the reference
+    VRAM and latency numbers that TurboQuantLlamaGenerator will be compared
+    against.
+
+    STATUS: stub. The inference framework (HuggingFace transformers, vLLM,
+    llama.cpp, etc.) will be decided when Hamza is ready to implement.
+    Both Llama generators should use the SAME framework for fair comparison.
+    """
+
+    def __init__(self, model_path: str, max_tokens: int = 500):
+        """
+        Args:
+            model_path: Path or HF identifier for the Llama 3.1 8B BF16 model.
+            max_tokens: Maximum tokens in the response.
+        """
+        self.model_path = model_path
+        self.max_tokens = max_tokens
+        self.system_prompt = self.DEFAULT_SYSTEM_PROMPT
+
+        # TODO: load the model here once framework is decided.
+
+    def generate(self, query: str, context: str) -> str:
+        raise NotImplementedError(
+            "BF16LlamaGenerator.generate not yet implemented. "
+            "Awaiting framework decision and integration."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Llama TurboQuant (compressed) — STUB, to be implemented
+# ---------------------------------------------------------------------------
+
+class TurboQuantLlamaGenerator(_LlamaGeneratorBase, Generator):
+    """Generator using TurboQuant-compressed Llama 3.1 8B.
+
+    This is the EXPERIMENTAL configuration for our research. It runs Llama
+    3.1 8B with TurboQuant compression applied to the KV cache (3-bit
+    target). Inference uses the custom C kernels for the compressed
+    attention path.
+
+    STATUS: stub. To be implemented once the TurboQuant kernels are
+    integrated as a Python library and the BF16 framework is chosen.
+    """
+
+    def __init__(self, model_path: str, bit_width: int = 3, max_tokens: int = 500):
+        """
+        Args:
+            model_path: Path or HF identifier for the Llama 3.1 8B model.
+            bit_width: TurboQuant compression bit-width (2, 3, or 4).
+                       Default 3 is the target configuration for the research.
+            max_tokens: Maximum tokens in the response.
+        """
+        self.model_path = model_path
+        self.bit_width = bit_width
+        self.max_tokens = max_tokens
+        self.system_prompt = self.DEFAULT_SYSTEM_PROMPT
+
+        # TODO: load the model + apply TurboQuant compression here.
+
+    def generate(self, query: str, context: str) -> str:
+        raise NotImplementedError(
+            "TurboQuantLlamaGenerator.generate not yet implemented. "
+            "Awaiting TurboQuant kernel integration."
+        )
