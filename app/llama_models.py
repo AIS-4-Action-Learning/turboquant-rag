@@ -445,8 +445,14 @@ class LlamaGenerator:
 
             response = llama.tokenizer.decode(generated_token)
             for tok in ("<|eot_id|>", "<|eos_id|>", "<|end_of_text|>",
-                    "  Special", "  Token"):
+                    "  Special", "  Token", ):
                 response = response.replace(tok, "")
+
+            # If the model leaked a Llama 3 header template, truncate it immediately
+            if "<|" in response:
+                response = response.split("<|")[0].strip()
+            else:
+                response = response.strip()
 
             if isinstance(llama, LlamaCompressed):
                 rmse_k, rmse_v = self._report_rmse(llama)

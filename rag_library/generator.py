@@ -223,11 +223,10 @@ class _LlamaGeneratorBase:
     TurboQuantLlamaGenerator.
     """
     DEFAULT_SYSTEM_PROMPT = """You are a helpful assistant that answers questions about Deep Learning.
-You must:
-Answer based ONLY on the provided context, if the question is not very specific to the context or out of scope, reply with: "I can't answer this question". Other wise:
+
+If the provided context does not contain enough information to answer the question, say: "I can't answer this question". Otherwise:
 1. Cite your sources (document name and page number).
 2. Be concise and accurate.
-3. If the question lacks clarification, request for clarification.
 """
 
     def _format_prompt(self, query: str, context: str, omit_sysprompt: bool) -> str:
