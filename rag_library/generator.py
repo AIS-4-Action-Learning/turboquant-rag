@@ -224,10 +224,12 @@ class _LlamaGeneratorBase:
     """
     DEFAULT_SYSTEM_PROMPT = """You are a helpful assistant that answers questions about Deep Learning.
 
-If the provided context does not contain enough information to answer the question, say: "I can't answer this question". Otherwise:
+You must:
 1. Cite your sources (document name and page number).
 2. Be concise and accurate.
 """
+
+# If the provided context does not contain enough information to answer the question, say: "I can't answer this question"
 
     def _format_prompt(self, query: str, context: str, omit_sysprompt: bool) -> str:
         """Format query + context into a Llama 3.1 chat-template string.
