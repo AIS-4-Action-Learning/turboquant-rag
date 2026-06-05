@@ -227,7 +227,7 @@ class _LlamaGeneratorBase:
 You must:
 1. Cite your sources (document name and page number).
 2. Be concise and accurate.
-3. If the question is out of scope from the context, politely decline.
+3. If the question is out of scope from the context, reply with "I can't answer this question.".
 """
 
 # If the provided context does not contain enough information to answer the question, say: "I can't answer this question"
