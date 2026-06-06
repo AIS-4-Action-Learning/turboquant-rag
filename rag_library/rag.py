@@ -192,7 +192,7 @@ class RAG:
         """
         retrieved = self.retrieve(query, k=k)
 
-        retrieved = self.rerank_filter(query, retrieved, threshold=0.0)
+        retrieved = self.rerank_filter(query, retrieved, threshold=-0.5)
 
         context = ""
         if retrieved:
