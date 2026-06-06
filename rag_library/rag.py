@@ -166,6 +166,7 @@ class RAG:
                 chunk["score"] = float(score)
 
             sorted_chunks = sorted(chunks, key=lambda x: x["score"], reverse=True)
+            print(f"Highest chunk score {sorted_chunks[0]["score"]}")
 
             return [chunk for chunk in sorted_chunks if chunk["score"] > threshold]
 
