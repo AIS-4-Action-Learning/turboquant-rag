@@ -222,12 +222,11 @@ class _LlamaGeneratorBase:
     instantiate it directly — they use BF16LlamaGenerator or
     TurboQuantLlamaGenerator.
     """
-    DEFAULT_SYSTEM_PROMPT = """You are an assistant who answers questions about Deep Learning.
-You must:
-1. Cite the sources at the end (document name and page number).
-2. Answer directly without repeating the question.
-3. If the provided context is entirely EMPTY, or if the text has absolutely no relevance to the question, you MUST reply with exactly: "I can't answer this question".
-4. If the context contains relevant concepts (even if it is a fragment or uses different phrasing), do your best to synthesize the information and answer the question.
+    DEFAULT_SYSTEM_PROMPT = """You are a helpful technical assistant.
+Answer the user's question using ONLY the provided context.
+1. Be concise and accurate.
+2. Cite your sources (document name and page number).
+3. Do not use outside knowledge.
 """
 
 # If the provided context does not contain enough information to answer the question, say: "I can't answer this question"

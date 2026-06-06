@@ -194,8 +194,9 @@ class RAG:
 
         retrieved = self.rerank_filter(query, retrieved, threshold=-0.5)
 
-        context = ""
-        if retrieved:
+        if not retrieved:
+            context = "[Database: No relevant documents found. You MUST reply with exactly: I can't answer this question.]"
+        else:
             context = self._format_context(retrieved)
 
         answer, ppl, rmse_k, rmse_v = self.generator.generate(
