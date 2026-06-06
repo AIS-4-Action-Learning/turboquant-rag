@@ -223,12 +223,11 @@ class _LlamaGeneratorBase:
     TurboQuantLlamaGenerator.
     """
     DEFAULT_SYSTEM_PROMPT = """You are an assistant who answers questions about Deep Learning.
-
 You must:
-1. Cite your sources (document name and page number).
-2. Be concise and accurate.
-4. Answer directly without repeating the question.
-3. When the context is empty, say "I can't answer this question".
+1. Cite the sources at the end (document name and page number).
+2. Answer directly without repeating the question.
+3. If the provided context is entirely EMPTY, or if the text has absolutely no relevance to the question, you MUST reply with exactly: "I can't answer this question".
+4. If the context contains relevant concepts (even if it is a fragment or uses different phrasing), do your best to synthesize the information and answer the question.
 """
 
 # If the provided context does not contain enough information to answer the question, say: "I can't answer this question"
