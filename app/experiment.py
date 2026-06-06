@@ -49,18 +49,6 @@ class Experiment:
         "rmse_key",
         "rmse_value",
     ]
-    EXPERIMENT_SCHEMA = [
-        "experiment_id",
-        "bit_width",
-        "group_size",
-        "mean_perplexity",
-        "mean_rmse_key",
-        "mean_rmse_value",
-        "fqa_accuracy",
-        "oosqa_accuracy",
-        "crqa_accuracy",
-        "zero_shot_accuracy",
-    ]
 
     def __init__(
         self,
@@ -73,7 +61,6 @@ class Experiment:
         questions_path: str = "data/questions.json",
         corpus_path: str = "data/corpus.json",
         trial_results_path: str = "results/trial_results.csv",
-        experiment_results_path: str = "results/experiment_results.csv",
         chunk: bool = False,
         n_trials: int = N_TRIALS
     ) -> None:
@@ -102,7 +89,6 @@ class Experiment:
             self.questions_path = Path(questions_path)
             self.corpus_path = Path(corpus_path)
             self.trial_results_path = Path(trial_results_path)
-            self.experiment_results_path = Path(experiment_results_path)
             self.n_trials = n_trials
 
             self.generator = self._build_generator(max_gen_len)
@@ -120,7 +106,6 @@ class Experiment:
 
             Path("data").mkdir(parents=True, exist_ok=True)
             self.trial_results_path.parent.mkdir(parents=True, exist_ok=True)
-            self.experiment_results_path.parent.mkdir(parents=True, exist_ok=True)
 
             self.questions = self._load_questions(self.questions_path)
             self._prepare_index(chunk)
@@ -128,10 +113,6 @@ class Experiment:
             self.trials_results = self._load_results(
                 self.trial_results_path,
                 self.TRIALS_SCHEMA,
-            )
-            self.experiment_results = self._load_results(
-                self.experiment_results_path,
-                self.EXPERIMENT_SCHEMA,
             )
         except Exception as exc:
             raise RuntimeError(
@@ -246,31 +227,6 @@ class Experiment:
 
         return self.questions[index]["expected_answer"]
 
-    @staticmethod
-    def _set_evaluation(
-        category: str,
-        evaluation: float,
-        index: int,
-        evals: dict[str, dict[int, float]],
-    ) -> None:
-        """Store an evaluation score in the category-specific accumulator.
-
-        Args:
-            category: Benchmark question category.
-            evaluation: Numeric correctness score for the answer.
-            index: Trial index.
-            evals: Mutable mapping of category accumulators.
-        """
-        category_key_map = {
-            "factual": "fqa_evals",
-            "cross-reference": "crqa_evals",
-            "out-of-scope": "oosqa_evals",
-        }
-        eval_key = category_key_map.get(category)
-
-        if eval_key is not None:
-            evals[eval_key][index] = evaluation
-
     def _log_trial(
         self,
         index: int,
@@ -306,58 +262,6 @@ class Experiment:
         }
         self.trials_results.loc[index, self.TRIALS_SCHEMA] = row
 
-    @staticmethod
-    def _mean_numeric(series: pd.Series) -> float:
-        """Return the mean of a numeric result series, ignoring invalid values.
-
-        Args:
-            series: Result values loaded from or prepared for CSV.
-
-        Returns:
-            The numeric mean, or ``nan`` when no numeric values exist.
-        """
-        return float(pd.to_numeric(series, errors="coerce").mean())
-
-    def _log_experiment(self, evals: dict[str, dict[int, float]]) -> None:
-        """Record aggregate metrics for the completed experiment.
-
-        Args:
-            evals: Per-category correctness scores collected during ``run``.
-        """
-        fqa_evals_tensor = torch.tensor(list(evals["fqa_evals"].values()))
-        crqa_evals_tensor = torch.tensor(list(evals["crqa_evals"].values()))
-        oosqa_evals_tensor = torch.tensor(list(evals["oosqa_evals"].values()))
-
-        fqa_accuracy = question_answering_accuracy(fqa_evals_tensor)
-        crqa_accuracy = question_answering_accuracy(crqa_evals_tensor)
-        oosqa_accuracy = question_answering_accuracy(oosqa_evals_tensor)
-        zs_accuracy = zero_shot_accuracy(
-            fqa_accuracy,
-            oosqa_accuracy,
-            crqa_accuracy,
-        )
-
-        row = {
-            "experiment_id": self.experiment_id,
-            "bit_width": self.bit_width,
-            "group_size": self.dims,
-            "mean_perplexity": self._mean_numeric(
-                self.trials_results["perplexity"]
-            ),
-            "mean_rmse_key": self._mean_numeric(self.trials_results["rmse_key"]),
-            "mean_rmse_value": self._mean_numeric(
-                self.trials_results["rmse_value"]
-            ),
-            "fqa_accuracy": fqa_accuracy,
-            "oosqa_accuracy": oosqa_accuracy,
-            "crqa_accuracy": crqa_accuracy,
-            "zero_shot_accuracy": zs_accuracy,
-        }
-        self.experiment_results.loc[
-            len(self.experiment_results),
-            self.EXPERIMENT_SCHEMA,
-        ] = row
-
     def run(self, top_k: int = 5) -> None:
         """Run all configured benchmark trials and persist the results.
 
@@ -374,16 +278,9 @@ class Experiment:
             print("=" * 15)
 
             self.trials_results = pd.DataFrame(columns=self.TRIALS_SCHEMA)
-            evals: dict[str, dict[int, float]] = {
-                "fqa_evals": {},
-                "crqa_evals": {},
-                "oosqa_evals": {},
-            }
             trial_count = min(self.n_trials, len(self.questions))
-            trial_durations: list[float] = []
 
             for index in range(trial_count):
-                trial_start_time = time.perf_counter()
                 question_data = self.questions[index]
                 question = question_data["question"]
                 category = question_data["category"]
@@ -410,7 +307,6 @@ class Experiment:
                     self.embedder,
                 )
 
-                self._set_evaluation(category, evaluation, index, evals)
                 self._log_trial(
                     index=index,
                     question=question,
@@ -420,32 +316,14 @@ class Experiment:
                     rmse_k=response["rmse_k"],
                     rmse_v=response["rmse_v"],
                 )
-                trial_duration = time.perf_counter() - trial_start_time
-                trial_durations.append(trial_duration)
-                average_trial_duration = sum(trial_durations) / len(
-                    trial_durations
-                )
-                remaining_trials = trial_count - len(trial_durations)
-                estimated_time_left = average_trial_duration * remaining_trials
 
                 print(f"RMSE Key: {response["rmse_k"]}")
                 print(f"RMSE Value: {response["rmse_v"]}")
                 print(f"Perplexity: {response["perplexity"]}")
                 print(f"Evaluation: {evaluation}")
-                print(
-                    "Timing: "
-                    f"trial={trial_duration / 60:.2f} min, "
-                    f"avg={average_trial_duration / 60:.2f} min, "
-                    f"time_left={estimated_time_left / 60:.2f} min"
-                )
                 print("-" * 15)
 
-            self._log_experiment(evals)
             self.trials_results.to_csv(self.trial_results_path, index=False)
-            self.experiment_results.to_csv(
-                self.experiment_results_path,
-                index=False,
-            )
         except Exception as exc:
             raise RuntimeError(
                 f"Failed to run experiment. Reason: {exc}"
