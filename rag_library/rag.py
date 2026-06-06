@@ -23,6 +23,8 @@ from .embedder import Embedder
 from .generator import Generator
 from .vector_store import VectorStore
 
+from sentence_transformers import CrossEncoder
+
 # Type aliases for readability
 PathLike = Union[str, Path]
 CorpusInput = Union[List[Dict], PathLike]
@@ -71,6 +73,7 @@ class RAG:
         self.chunker = chunker if chunker is not None else Chunker()
         self.vector_store = vector_store if vector_store is not None else VectorStore()
         self.top_k = top_k
+        self.reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
     # ---------------------------------------------------------------------
     # Indexing
@@ -152,6 +155,24 @@ class RAG:
 
         return self.vector_store.search(query_embedding, k=k)
 
+
+    def rerank_filter(self, query: str, chunks: List[Dict], threshold: float = 0.0) -> List[Dict]:
+        try:
+            pairs = [(query, chunk["text"]) for chunk in chunks]
+
+            logits = self.reranker.predict(pairs)
+
+            for score, chunk in zip(logits, chunks):
+                chunk["score"] = float(score)
+
+            sorted_chunks = sorted(chunks, key=lambda x: x["score"], reverse=True)
+
+            return [chunk for chunk in sorted_chunks if chunk["score"] > threshold]
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to rerank and retrieve for the following reason: {e}")
+
+
     def query(self, query: str, k: Optional[int] = None, omit_sysprompt: bool = False) -> Dict:
         """Run the full RAG pipeline: retrieve + generate.
 
@@ -169,7 +190,13 @@ class RAG:
             inspect what was retrieved — important for our research benchmarks.
         """
         retrieved = self.retrieve(query, k=k)
-        context = self._format_context(retrieved)
+
+        retrieved = self.rerank_filter(query, retrieved, threshold=0.0)
+
+        context = ""
+        if retrieved:
+            context = self._format_context(retrieved)
+
         answer, ppl, rmse_k, rmse_v = self.generator.generate(
             query,
             context,
