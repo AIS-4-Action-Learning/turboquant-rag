@@ -227,6 +227,7 @@ class _LlamaGeneratorBase:
 You must:
 1. Cite your sources (document name and page number).
 2. Be concise and accurate.
+4. Answer directly without repeating the question.
 3. When the context is empty, say "I can't answer this question".
 """
 
