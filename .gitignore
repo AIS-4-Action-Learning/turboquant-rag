@@ -249,3 +249,7 @@ data/cross-reference-extended.json
 data/out-of-scope-extended.json
 results/trials/
 results/bf16/
+results/experiment_results.csv
+scripts/aggregate_experiments.py
+results/trials_results_exp_0.csv
+results/trials_results_exp_1.csv

@@ -3,7 +3,15 @@ from typing import List
 import pandas as pd
 import numpy as np
 
-TRIAL_PATHS = ["trial_1.csv", "trial_2.csv", "trial_3.csv"] # Add your paths here
+TRIALS_ROOT = "results/bf16/"
+
+TRIAL_PATHS = [
+    TRIALS_ROOT + "trial_1.csv",
+    TRIALS_ROOT + "trial_2.csv",
+    TRIALS_ROOT + "trial_3.csv",
+    TRIALS_ROOT + "trial_4.csv",
+    TRIALS_ROOT + "trial_5.csv"
+               ] # Add your paths here
 EXPERIMENT_FILE = "results/experiment_results.csv"
 
 EXPERIMENT_SCHEMA = [
@@ -88,4 +96,4 @@ if __name__ == '__main__':
     # Ensure the results directory exists before saving
     os.makedirs("results", exist_ok=True)
     print("Aggregating data...")
-    main(0)
+    main(1)

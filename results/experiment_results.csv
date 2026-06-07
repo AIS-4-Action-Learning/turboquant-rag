@@ -1,1 +1,3 @@
-experiment_id, bit_width, group_size, mean_perplexity, mean_rmse_key, mean_rmse_value, fqa_accuracy, oosqa_accuracy, crqa_accuracy, zero_shot_accuracy 
+experiment_id,bit_width,group_size,mean_perplexity,mean_rmse_key,mean_rmse_value,fqa_accuracy,oosqa_accuracy,crqa_accuracy,zero_shot_accuracy
+0,2.0,128.0,12.36260207839634,1.2914779238078906,0.2104329913854599,0.0625,0.0,0.0,0.0217391304347826
+1,,,12.362646051075147,0.0,0.0,0.3125,0.6666666666666666,0.7333333333333333,0.5652173913043478
