@@ -248,3 +248,4 @@ docs/
 data/cross-reference-extended.json
 data/out-of-scope-extended.json
 results/trials/
+results/bf16/
