@@ -14,8 +14,7 @@ from app import (
     TOKENIZER_PATH, get_turboquant_lib_path, TURBOQUANT_VARIANT,
     get_compressor_for_variant
 )
-from app.metrics import perplexity
-from app.metrics import rmse
+
 from llama_models.llama3.args import ModelArgs
 from llama_models.llama3.model import Transformer
 from llama_models.llama3.tokenizer import Tokenizer
@@ -183,8 +182,8 @@ class LlamaCompressed(Llama):
                  device: str = "cuda",
                  is_batch: bool = True,
                  bit_width: float = DEFAULT_BIT_WIDTH,
-                 dims: int = DEFAULT_DIMENSIONS,
-                 use_mse: bool = False):
+                 dims: int = DEFAULT_DIMENSIONS
+                 ):
         # Setup fairscale for single-process usage
         _setup_single_process_distributed(device)
 
@@ -193,21 +192,12 @@ class LlamaCompressed(Llama):
         self.bit_width = bit_width
         self.dims = dims
 
-        self.k_mse = None
-        self.v_mse = None
-
-        if use_mse:
-            self.k_mse = {}
-            self.v_mse = {}
-
         # Initialize model arguments (hyperparams, context window, and batch size)
         self.model_args = ModelArgs(
             **self.params,
             max_seq_len=max_seq_length,
             max_batch_size=batch_size,
             use_compressed_kv_cache=True,
-            k_mse=self.k_mse,
-            v_mse=self.v_mse
         )
 
         # Use default context path if not set, looking in artifacts folder
@@ -361,53 +351,13 @@ class LlamaCompressed(Llama):
 
 
 class LlamaGenerator:
-    @staticmethod
-    def _reset_mse(llama: LlamaBF16 | LlamaCompressed) -> None:
-        for attr in ("k_mse", "v_mse"):
-            mse_by_layer = getattr(llama, attr, None)
-            if mse_by_layer is not None:
-                mse_by_layer.clear()
-
-    @staticmethod
-    def _layer_mse(
-        samples: List[tuple[torch.Tensor, int]],
-    ) -> torch.Tensor:
-        total_count = sum(count for _, count in samples)
-        if total_count == 0:
-            return torch.tensor(float("nan"), dtype=torch.float32)
-
-        weighted_mses = torch.stack(
-            [sample_mse.float() * count for sample_mse, count in samples]
-        )
-        return weighted_mses.sum() / total_count
-
-    @staticmethod
-    def _report_rmse(llama: LlamaBF16 | LlamaCompressed) -> Tuple[float, float]:
-        k_mse = getattr(llama, "k_mse", None)
-        v_mse = getattr(llama, "v_mse", None)
-        if not k_mse or not v_mse:
-            return -1.0, -1.0
-
-        layer_k_mses = torch.stack(
-            [LlamaGenerator._layer_mse(samples) for _, samples in sorted(k_mse.items())],
-        )
-        layer_v_mses = torch.stack(
-            [LlamaGenerator._layer_mse(samples) for _, samples in sorted(v_mse.items())],
-        )
-
-        return rmse(layer_k_mses), rmse(layer_v_mses)
-
     def generate(self, tensor_tokens: torch.Tensor,
                  token_ids: Optional[List[int]],
                  llama: LlamaBF16 | LlamaCompressed,
-                 max_gen_len: int = 1024) -> Tuple[str, float, float, float] | Tuple[str, float, None, None]:
+                 max_gen_len: int = 1024) -> str:
 
         try:
-            ppl = -1.0
             generated_token = []
-
-            if isinstance(llama, LlamaCompressed):
-                self._reset_mse(llama)
 
             with torch.no_grad():
                 current_pos = 0
@@ -419,9 +369,6 @@ class LlamaGenerator:
                     # Pass all prompt tokens up to the second-to-last one simultaneously.
                     prefill_prompt = tensor_tokens[:, :-1].contiguous()
                     logits = llama.model.forward(prefill_prompt, start_pos=0)
-
-                    if token_ids is not None:
-                        ppl = perplexity(logits, token_ids)
 
                     del logits, prefill_prompt
                     current_pos = seq_len - 1
@@ -456,12 +403,7 @@ class LlamaGenerator:
             else:
                 response = response.strip()
 
-            if isinstance(llama, LlamaCompressed):
-                rmse_k, rmse_v = self._report_rmse(llama)
-                return response.strip(), ppl, rmse_k, rmse_v
-            elif isinstance(llama, LlamaBF16):
-                return response.strip(), ppl, None, None
-
+            return response
         except Exception as e:
             raise RuntimeError(f"Failed to generate response. Reason: {e}")
 

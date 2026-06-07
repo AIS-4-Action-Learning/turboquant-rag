@@ -230,7 +230,7 @@ class RAG:
         else:
             context = self._format_context(retrieved)
 
-        answer, ppl, rmse_k, rmse_v = self.generator.generate(
+        answer = self.generator.generate(
             query,
             context,
             omit_sysprompt)
@@ -239,9 +239,6 @@ class RAG:
             "query": query,
             "answer": answer,
             "retrieved": retrieved,
-            "perplexity": ppl,
-            "rmse_k": rmse_k,
-            "rmse_v": rmse_v
         }
 
     # ---------------------------------------------------------------------
