@@ -214,7 +214,7 @@ class RAG:
         """
         retrieved = self.retrieve(query, k=k)
 
-        retrieved = self.rerank_filter(query, retrieved, threshold=-0.5)
+        retrieved = self.rerank_filter(query, retrieved)
 
         if not retrieved:
             context = "[Database: No relevant documents found. You MUST reply with exactly: I can't answer this question.]"
