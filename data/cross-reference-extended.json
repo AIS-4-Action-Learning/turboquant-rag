@@ -1,0 +1,152 @@
+[
+    {
+        "question": "How do the probability and information theory notation definitions (entropy H[P] and KL-divergence D_KL) connect to the cross-entropy loss function used to train softmax classifiers?",
+        "expected_answer": "Entropy H[P] is defined as the sum of -P(j) * log P(j) over all classes j, representing the minimum number of nats needed to encode data drawn from distribution P. Cross-entropy loss for a softmax classifier plugs the predicted distribution into this definition: l(y, y_hat) = -sum_j y_j * log(exp(o_j) / sum_k exp(o_k)), which reduces to log(sum_k exp(o_k)) - sum_j y_j * o_j. Minimizing this loss is equivalent to minimizing the KL-divergence between the true label distribution and the model's predicted distribution, since the entropy of the true labels is fixed. The log and exp operators defined in the notation section are the core components of both the softmax normalization and the negative log-likelihood objective.",
+        "source": "corpus.json",
+        "category": "cross-reference",
+        "page": [
+            37,
+            39,
+            169,
+            171
+        ]
+    },
+    {
+        "question": "In what ways do the sparse interaction and weight-sharing properties that distinguish convolutional layers from fully connected layers relate to the covariance matrix structure exploited during PCA-based dimensionality reduction of image data?",
+        "expected_answer": "Convolutional layers replace the fourth-order weight tensor of a fully connected spatial layer with a small kernel that is shared across all spatial positions, encoding the assumption of translation invariance: if a pattern is worth detecting at one location it is worth detecting everywhere. PCA applied to image data operates on the covariance matrix Sigma = E[(x - mu)(x - mu)^T], whose off-diagonal elements capture how correlated pixel coordinates are. Natural images have highly structured covariance matrices where nearby pixels are strongly correlated, producing a few dominant eigenvectors that capture most variance. Both CNN weight sharing and PCA exploit this same spatial regularity: CNN kernels detect local correlated patterns while PCA's eigendecomposition finds the directions of maximum correlated variance, both discarding high-dimensional redundancy by assuming that relevant structure is spatially compact and repeating.",
+        "source": "corpus.json",
+        "category": "cross-reference",
+        "page": [
+            116,
+            275,
+            279
+        ]
+    },
+    {
+        "question": "How does the vanishing gradient problem identified during backpropagation through deep networks interact with the choice of Xavier initialization, and how does the GRU architecture structurally reduce reliance on proper initialization for capturing long-range dependencies?",
+        "expected_answer": "During backpropagation, the product of weight matrices across layers can produce gradients that are excessively small (the vanishing gradient problem) or excessively large (the exploding gradient problem), rendering earlier layers unable to update meaningfully. Xavier initialization addresses this by sampling weights from a distribution with variance 2 / (n_in + n_out), chosen so that the variance of activations and gradients remains approximately constant across layers in both the forward and backward pass. The GRU provides a structural complement: its reset gate controls how much of the previous hidden state to retain, and its update gate controls how much of the new candidate state to incorporate. These gates create additive update paths that prevent gradient signals from being repeatedly multiplied through nonlinear transformations across time steps, so the GRU can capture long-range dependencies even when initialization is imperfect.",
+        "source": "corpus.json",
+        "category": "cross-reference",
+        "page": [
+            225,
+            226,
+            227,
+            228,
+            417,
+            418,
+            419,
+            420,
+            421
+        ]
+    },
+    {
+        "question": "How are the mathematical operators defined in the notation section \u2014 specifically the Hadamard product and matrix transpose \u2014 concretely instantiated within the GRU gating equations and the scaled dot-product attention computation?",
+        "expected_answer": "The Hadamard product (elementwise multiplication, denoted by the circle operator) appears directly in the GRU candidate hidden state equation: H_tilde_t = tanh(X_t * W_xh + (R_t elementwise H_{t-1}) * W_hh + b_h), where the reset gate R_t is applied elementwise to the previous hidden state H_{t-1} to selectively erase portions of past memory. The update gate similarly uses elementwise products to interpolate between old and candidate hidden states: H_t = Z_t elementwise H_{t-1} + (1 - Z_t) elementwise H_tilde_t. The matrix transpose (denoted by the superscript T operator in the notation section) is the central operation in scaled dot-product attention, where the compatibility between queries Q and keys K is computed as Q * K^T, producing a matrix of pairwise scores that is then scaled and passed through softmax before weighting the value matrix V.",
+        "source": "corpus.json",
+        "category": "cross-reference",
+        "page": [
+            37,
+            39,
+            417,
+            418,
+            419,
+            420,
+            451,
+            452
+        ]
+    },
+    {
+        "question": "How does the generalization theory concept of model capacity \u2014 quantified through VC dimension \u2014 constrain the practical architecture choices of depth, width, and dropout rate when building a GRU for sequence modeling?",
+        "expected_answer": "The VC dimension quantifies the largest number of data points for which a model class can assign any arbitrary binary labeling; it grows with the number of trainable parameters. When model capacity is high relative to the training set size, the model memorizes training noise rather than learning generalizable patterns \u2014 the overfitting regime. For a GRU, depth (number of stacked recurrent layers) and hidden width h directly control the number of parameters and therefore the effective capacity. Common GRU widths are in the range 64 to 2056 and depths in the range 1 to 8, and deep gated RNNs require careful tuning to ensure proper convergence. Dropout applied to recurrent layers is a direct capacity-control tool: it stochastically zeros hidden activations during training, functioning as an ensemble over many lower-capacity sub-networks, narrowing the gap between training and generalization error. The practitioner must therefore calibrate GRU dimensions so that capacity matches dataset size, then use dropout as the residual regularizer.",
+        "source": "corpus.json",
+        "category": "cross-reference",
+        "page": [
+            192,
+            193,
+            234,
+            235,
+            236,
+            237,
+            238,
+            421,
+            422,
+            423,
+            424,
+            425
+        ]
+    },
+    {
+        "question": "How do Adam's bias-correction terms interact with the gradient scale produced by Xavier initialization versus poorly scaled alternatives during the first iterations of training?",
+        "expected_answer": "Adam tracks two state variables: v_t, the exponentially weighted moving average of the gradient (first moment) with decay beta_1 = 0.9, and s_t, the exponentially weighted moving average of the squared gradient (second moment) with decay beta_2 = 0.999. Because both are initialized at zero, they are biased toward smaller values early in training. Bias correction rescales them as v_hat_t = v_t / (1 - beta_1^t) and s_hat_t = s_t / (1 - beta_2^t) to produce unbiased estimates. Under Xavier initialization, weights are drawn from a distribution with variance 2 / (n_in + n_out), which keeps gradient magnitudes well-scaled from the first forward pass, so the bias-corrected second moment s_hat_t quickly converges to a reliable denominator and the per-parameter learning rate stabilizes. Under poor initialization \u2014 for instance variance sigma^2 = 1 which causes the product of weight matrices across 100 layers to explode \u2014 initial gradients are either explosive or vanishingly small, forcing bias correction to normalize corrupted statistics and delaying the point at which s_hat_t faithfully estimates local curvature.",
+        "source": "corpus.json",
+        "category": "cross-reference",
+        "page": [
+            225,
+            226,
+            227,
+            228,
+            572,
+            573,
+            574,
+            575,
+            576
+        ]
+    },
+    {
+        "question": "How do the running statistics tracked by batch normalization during training get corrupted when dropout is applied before normalization layers, and how does this manifest as a mismatch when the model is evaluated on the validation or test split?",
+        "expected_answer": "Batch normalization computes the mean and variance of activations over each mini-batch during training and accumulates running estimates that are fixed and used for normalization at evaluation time. Dropout, applied only during training, randomly zeros units with Bernoulli-distributed masks and rescales the survivors by 1/p to preserve expected values. When dropout precedes a batch normalization layer, the distribution of activations seen by the normalization operation during training reflects the stochastic zeroing, so the running mean and variance estimates are calibrated to this dropout-perturbed distribution. At evaluation time dropout is disabled, restoring the full activation magnitude, which no longer matches the stored running statistics. This train-eval mismatch causes the normalization to apply incorrect centering and scaling, degrading performance on the validation and test set. The data splits thus expose the inconsistency directly: training accuracy may appear stable while validation accuracy reflects the covariate shift introduced by the different activation regime at evaluation.",
+        "source": "corpus.json",
+        "category": "cross-reference",
+        "page": [
+            235,
+            236,
+            237,
+            238,
+            333,
+            334,
+            335,
+            336,
+            337,
+            338,
+            339,
+            340,
+            341
+        ]
+    },
+    {
+        "question": "How does the strictly convex optimization framework \u2014 where every local minimum is a global minimum because the Hessian is positive definite everywhere \u2014 break down when ReLU activations and max-pooling are introduced in a multi-layer convolutional architecture?",
+        "expected_answer": "Convexity plays a vital role in optimization analysis because convex problems guarantee that local minima are also global minima and that gradient-based algorithms converge to the optimum. A function is strictly convex when its Hessian matrix is positive definite everywhere. In deep convolutional networks, ReLU activations introduce piecewise-linear non-differentiabilities: the derivative is zero for all negative inputs and the function is non-differentiable at exactly zero. Composing multiple such activations with max-pooling \u2014 which takes the maximum value over spatial regions \u2014 produces an objective function that is non-convex, non-smooth in many regions, and riddled with saddle points, local minima, and flat plateaus. At a saddle point, the Hessian has both positive and negative eigenvalues, so neither a local minimum nor a maximum condition holds. The optimization problems in deep learning may therefore have many local minima, and the problem generally is not convex. As a result, practitioners use stochastic gradient descent variants such as Adam or SGD with momentum to traverse these non-convex geometries, relying on the natural variance of minibatch gradients to escape local minima rather than on analytical convergence guarantees.",
+        "source": "corpus.json",
+        "category": "cross-reference",
+        "page": [
+            275,
+            276,
+            277,
+            278,
+            279,
+            510,
+            511,
+            512,
+            513,
+            514,
+            515
+        ]
+    },
+    {
+        "question": "How does the BLEU evaluation metric for sequence-to-sequence translation connect to the conditional probability notation established in the preamble, and how does the choice between Adam and SGD with momentum affect the model's ability to maximize it indirectly during training?",
+        "expected_answer": "The notation section defines the conditional probability distribution P(X | Y), which is the foundational quantity a sequence-to-sequence model estimates: at each decoding step the model produces a probability distribution over the target vocabulary conditioned on the source sequence and previously generated tokens. BLEU measures the geometric mean of n-gram precision between a generated sequence and a reference translation, and the seq2seq model is trained using Adam to minimize the cross-entropy loss, which is the negative log conditional likelihood of the target tokens. The Adam optimizer is used directly in the seq2seq training loop because it tracks both the first moment v_t and the second moment s_t of the gradient and applies bias correction, which stabilizes training on long variable-length sequences where gradient magnitudes vary strongly across time steps. SGD with momentum, by contrast, scales updates linearly with gradient magnitude without adaptive per-parameter learning rates, making it more sensitive to the scale of the initial gradients and typically slower to converge on the non-convex objectives arising from deep encoder-decoder architectures. The training loss minimized by either optimizer does not directly optimize BLEU since BLEU is non-differentiable, but a lower cross-entropy on the validation split correlates with higher BLEU at inference time.",
+        "source": "corpus.json",
+        "category": "cross-reference",
+        "page": [
+            39,
+            443,
+            444,
+            488,
+            572,
+            573,
+            574,
+            575,
+            576
+        ]
+    }
+]

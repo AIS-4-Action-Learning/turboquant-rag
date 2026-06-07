@@ -1,0 +1,65 @@
+[
+    {
+        "question": "What are the step-by-step procedures required to obtain a CE certification for an AI-based medical diagnostic device under EU MDR 2017/745 regulations?",
+        "expected_answer": null,
+        "source": null,
+        "category": "out-of-scope",
+        "page": null
+    },
+    {
+        "question": "How does the real-time options pricing engine used by Goldman Sachs differ architecturally from the one deployed by JPMorgan Chase for derivatives trading?",
+        "expected_answer": null,
+        "source": null,
+        "category": "out-of-scope",
+        "page": null
+    },
+    {
+        "question": "What are the current SLA guarantees and throughput benchmarks for Google Cloud TPU v5e pods running large-scale distributed training workloads?",
+        "expected_answer": null,
+        "source": null,
+        "category": "out-of-scope",
+        "page": null
+    },
+    {
+        "question": "How do you configure a high-availability active-passive failover cluster using Pacemaker and Corosync on a bare-metal Ubuntu server running production inference services?",
+        "expected_answer": null,
+        "source": null,
+        "category": "out-of-scope",
+        "page": null
+    },
+    {
+        "question": "What are the intellectual property licensing obligations when integrating open-source Llama 3 model weights into a commercially deployed SaaS product?",
+        "expected_answer": null,
+        "source": null,
+        "category": "out-of-scope",
+        "page": null
+    },
+    {
+        "question": "Which specific tax treatment applies to equity-settled share-based compensation under IFRS 2 for AI startup employees holding unvested restricted stock units across multiple jurisdictions?",
+        "expected_answer": null,
+        "source": null,
+        "category": "out-of-scope",
+        "page": null
+    },
+    {
+        "question": "What is the end-to-end hardware bill of materials required to assemble a petascale neuromorphic computing cluster optimized for spiking neural network inference?",
+        "expected_answer": null,
+        "source": null,
+        "category": "out-of-scope",
+        "page": null
+    },
+    {
+        "question": "How does the carbon footprint accounting methodology used by Microsoft for its Azure AI infrastructure differ from that used by Amazon Web Services for equivalent GPU cluster workloads?",
+        "expected_answer": null,
+        "source": null,
+        "category": "out-of-scope",
+        "page": null
+    },
+    {
+        "question": "What specific network topology and InfiniBand fabric configuration is recommended for a 512-node NVIDIA DGX H100 cluster to maximize all-reduce collective communication bandwidth?",
+        "expected_answer": null,
+        "source": null,
+        "category": "out-of-scope",
+        "page": null
+    }
+]

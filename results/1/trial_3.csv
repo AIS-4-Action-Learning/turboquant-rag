@@ -1,0 +1,17 @@
+trial_number,bit_width,group_size,model_type,context_question,question_type,evaluation,perplexity,rmse_key,rmse_value
+0,,,BF16,What is the primary difference between a matrix and a tensor as described in the linear algebra introduction?,factual,1.0,7.312730312347412,0.0,0.0
+1,,,BF16,What mathematical operation describes the derivative of a matrix with respect to a vector?,factual,0.0,5.69816780090332,0.0,0.0
+2,,,BF16,Which optimization algorithm generalizes standard gradient descent by incorporating an exponentially decaying average of past gradients to maintain momentum?,factual,1.0,7.467040538787842,0.0,0.0
+3,,,BF16,What is the mathematical formulation of the dropout regularization technique applied to a hidden layer activation vector?,factual,0.0,5.882692337036133,0.0,0.0
+4,,,BF16,"According to the text, what specific failure mode does batch normalization alleviate during the training of deep networks?",factual,0.0,7.857662200927734,0.0,0.0
+5,,,BF16,What is the structural difference between standard cross-entropy loss and binary cross-entropy loss formulas?,factual,1.0,4.278275966644287,0.0,0.0
+6,,,BF16,How is the capacity of a statistical model defined in relation to the phenomena of overfitting and underfitting?,factual,1.0,8.676198959350586,0.0,0.0
+7,,,BF16,What is the standard weight initialization strategy proposed by Xavier Glorot and Yoshua Bengio for deep networks using symmetric activation functions?,factual,0.0,8.719834327697754,0.0,0.0
+8,,,BF16,Which recurrent neural network variant explicitly relies on a reset gate and an update gate to capture long-range dependencies without a separate cell state?,factual,1.0,6.459421157836914,0.0,0.0
+9,,,BF16,How does multi-head attention extend the vanilla self-attention mechanism computationally?,factual,0.0,11.930468559265137,0.0,0.0
+10,,,BF16,What specific matrix decomposition forms the foundation for Principal Component Analysis (PCA) optimization?,factual,0.0,15.12972354888916,0.0,0.0
+11,,,BF16,What are the three canonical data splits required to build and evaluate a deep learning pipeline cleanly?,factual,0.0,15.28855037689209,0.0,0.0
+12,,,BF16,What mathematical constraint determines whether an optimization problem is considered strictly convex?,factual,0.0,6.868403911590576,0.0,0.0
+13,,,BF16,What structural property separates a convolutional layer from a fully connected layer regarding parameter efficiency?,factual,0.0,9.690326690673828,0.0,0.0
+14,,,BF16,What specific formulation distinguishes Adam from the RMSProp optimizer?,factual,0.0,16.932903289794922,0.0,0.0
+15,,,BF16,"What phenomenon occurs when the gradients flowing backward through a deep architecture approach zero, preventing earlier layers from updating?",factual,0.0,12.838228225708008,0.0,0.0

@@ -217,7 +217,6 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-<<<<<<< HEAD
 NEW_FEATURE.md
 NEW_FEATURE.pdf
 PROJECT_DESCRIPTION.md
@@ -225,7 +224,6 @@ ToDo.md
 USER_MANUAL.md
 USER_MANUAL.pdf
 debug/
-=======
 # --- rag library-specific ---
 
 # Data files (large PDFs and processed corpora)
@@ -244,12 +242,3 @@ artifacts
 debug
 pyrightconfig.json
 docs/
-
-data/cross-reference-extended.json
-data/out-of-scope-extended.json
-results/trials/
-results/bf16/
-results/experiment_results.csv
-scripts/aggregate_experiments.py
-results/trials_results_exp_0.csv
-results/trials_results_exp_1.csv
