@@ -13,7 +13,6 @@ Class hierarchy:
 import time
 from abc import ABC, abstractmethod
 from typing import List, cast
-from FlagEmbedding import FlagModel
 import numpy as np
 
 # ---------------------------------------------------------------------------
@@ -169,6 +168,9 @@ class GeminiEmbedder(Embedder):
 
 class BGEmbedder(Embedder):
     def __init__(self, batch_size: int = 12):
+        # Import lazily so the module can be imported without requiring the
+        # full FlagEmbedding/transformers stack unless this embedder is used.
+        from FlagEmbedding import FlagModel
 
         self.model = FlagModel(
             'BAAI/bge-small-en-v1.5',

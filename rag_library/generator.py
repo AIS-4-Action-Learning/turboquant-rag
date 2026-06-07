@@ -222,19 +222,15 @@ class _LlamaGeneratorBase:
     instantiate it directly — they use BF16LlamaGenerator or
     TurboQuantLlamaGenerator.
     """
+    DEFAULT_SYSTEM_PROMPT = """You are a helpful technical assistant.
+Answer the user's question using ONLY the provided context.
+1. Be concise and accurate.
+2. Answer directly without repeating the question.
+2. Cite your sources (document name and page number).
+3. Do not use outside knowledge.
+"""
 
-    DEFAULT_SYSTEM_PROMPT = """You are a helpful assistant.
-
-    Answer the question based STRICTLY on the provided context.
-
-    Rules:
-    - If the context doesn't contain the answer, say 'I don't have enough information to answer this.'
-    - Always cite which source your answer comes from using the format: (Source: <filename>, Page <number>).
-    - Use the context to answer, applying reasonable inference.
-    - If the answer comes from multiple chunks/sources, combine and cite all of them.
-    - If the question is yes/no, answer with only 'Yes' or 'No'
-    - If the question asks what NOT to do, infer the answer from what the context has
-    """
+# If the provided context does not contain enough information to answer the question, say: "I can't answer this question"
 
     def _format_prompt(self, query: str, context: str, omit_sysprompt: bool) -> str:
         """Format query + context into a Llama 3.1 chat-template string.
@@ -281,10 +277,15 @@ class BF16LlamaGenerator(_LlamaGeneratorBase, Generator):
 
     def generate(self, query: str, context: str, omit_sysprompt: bool) -> str:
         formatted_prompt = self._format_prompt(query, context, omit_sysprompt)
-        _, prompt_tensors = self.llama.input_encoding(formatted_prompt)
+        token_ids, prompt_tensors = self.llama.input_encoding(formatted_prompt)
         gen_limit = self.max_tokens
 
-        response = self.llama_generator.generate(prompt_tensors, self.llama, gen_limit)
+        response = self.llama_generator.generate(
+            tensor_tokens=prompt_tensors,
+            token_ids=token_ids,
+            llama=self.llama,
+            max_gen_len=gen_limit
+        )
 
         return response
 
@@ -322,9 +323,14 @@ class TurboQuantLlamaGenerator(_LlamaGeneratorBase, Generator):
 
     def generate(self, query: str, context: str, omit_sysprompt: bool) -> str:
         formatted_prompt = self._format_prompt(query, context, omit_sysprompt)
-        _, prompt_tensors = self.llama.input_encoding(formatted_prompt)
+        token_ids, prompt_tensors = self.llama.input_encoding(formatted_prompt)
         gen_limit = self.max_tokens
 
-        response = self.llama_generator.generate(prompt_tensors, self.llama, gen_limit)
+        response = self.llama_generator.generate(
+            tensor_tokens=prompt_tensors,
+            token_ids=token_ids,
+            llama=self.llama,
+            max_gen_len=gen_limit
+        )
 
         return response

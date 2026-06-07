@@ -15,6 +15,7 @@ Lifecycle:
 """
 
 import json
+import numpy as np
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 
@@ -22,6 +23,8 @@ from .chunker import Chunker
 from .embedder import Embedder
 from .generator import Generator
 from .vector_store import VectorStore
+
+from sentence_transformers import CrossEncoder
 
 # Type aliases for readability
 PathLike = Union[str, Path]
@@ -71,6 +74,7 @@ class RAG:
         self.chunker = chunker if chunker is not None else Chunker()
         self.vector_store = vector_store if vector_store is not None else VectorStore()
         self.top_k = top_k
+        self.reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
     # ---------------------------------------------------------------------
     # Indexing
@@ -152,6 +156,55 @@ class RAG:
 
         return self.vector_store.search(query_embedding, k=k)
 
+
+    def rerank_filter(self, query: str, chunks: List[Dict]) -> List[Dict]:
+        if not chunks:
+            return []
+
+        try:
+            # 1. Compute Cross-Encoder logits
+            pairs = [[query, chunk["text"]] for chunk in chunks]
+            scores = self.reranker.predict(pairs)
+
+            for chunk, score in zip(chunks, scores):
+                chunk["score"] = float(score)
+
+            # 2. Sort from highest to lowest logit
+            sorted_chunks = sorted(chunks, key=lambda x: x["score"], reverse=True)
+            max_score = sorted_chunks[0]["score"]
+
+            # 3. ABSOLUTE PASS: Clear Factual Matches
+            if max_score >= -0.5:
+                return [chunk for chunk in sorted_chunks if chunk["score"] >= -0.5]
+
+            # 4. ABSOLUTE FAIL: Pure Garbage (No fluke match at all)
+            if max_score < -4.5:
+                return []
+
+            # 5. THE DISAMBIGUATION ZONE (-4.5 < max_score < -0.5)
+            # We use the top 3 chunks to calculate the Entropy Distribution
+            top_k = min(3, len(sorted_chunks))
+            top_scores = np.array([c["score"] for c in sorted_chunks[:top_k]])
+
+            # Calculate Softmax (with max subtraction for numerical stability)
+            exp_scores = np.exp(top_scores - np.max(top_scores))
+            probs = exp_scores / np.sum(exp_scores)
+
+            # Calculate Shannon Entropy
+            entropy = -np.sum(probs * np.log(probs + 1e-9))
+
+            # 6. DECISION GATING
+            # Max entropy for k=3 is ~1.09. 
+            # > 0.75 means the scores are flat (Cross-Reference: multiple partial clues)
+            if entropy > 0.75:
+                return sorted_chunks[:3]  # Keep top 3 for LLM synthesis
+
+            # < 0.75 means there is a sharp dropoff (Out-of-Scope: an isolated fluke match)
+            return []
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to rerank chunks. Reason: {e}")
+
     def query(self, query: str, k: Optional[int] = None, omit_sysprompt: bool = False) -> Dict:
         """Run the full RAG pipeline: retrieve + generate.
 
@@ -169,8 +222,18 @@ class RAG:
             inspect what was retrieved — important for our research benchmarks.
         """
         retrieved = self.retrieve(query, k=k)
-        context = self._format_context(retrieved)
-        answer = self.generator.generate(query, context, omit_sysprompt)
+
+        retrieved = self.rerank_filter(query, retrieved)
+
+        if not retrieved:
+            context = "[Database: No relevant documents found. You MUST reply with exactly: I can't answer this question.]"
+        else:
+            context = self._format_context(retrieved)
+
+        answer = self.generator.generate(
+            query,
+            context,
+            omit_sysprompt)
 
         return {
             "query": query,

@@ -220,7 +220,7 @@ __marimo__/
 # --- rag library-specific ---
 
 # Data files (large PDFs and processed corpora)
-data/
+# data/
 
 # FAISS indexes (regeneratable from corpus.json)
 *.faiss
@@ -245,3 +245,13 @@ COMPARISON.md
 USER_MANUAL_v2.pdf
 docs/
 results/
+docs/
+
+data/cross-reference-extended.json
+data/out-of-scope-extended.json
+results/trials/
+results/bf16/
+results/experiment_results.csv
+scripts/aggregate_experiments.py
+results/trials_results_exp_0.csv
+results/trials_results_exp_1.csv
