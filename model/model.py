@@ -124,12 +124,8 @@ class Attention(nn.Module):
         self.n_local_kv_heads = self.n_kv_heads // world_size
         self.n_rep = self.n_local_heads // self.n_local_kv_heads
         self.head_dim = args.dim // args.n_heads
-        self.use_mse = args.k_mse is not None and args.v_mse is not None
         self.layer_n = layer_n
 
-        if self.use_mse:
-            self.k_mse = args.k_mse
-            self.v_mse = args.v_mse
 
         self.wq = ColumnParallelLinear(
             args.dim,
@@ -476,119 +472,6 @@ class Attention(nn.Module):
             target_dtype,
         )
 
-    def _compute_mse(
-        self,
-        bsz: int,
-        seqlen: int,
-        start_pos: int,
-        xv: torch.Tensor,
-        xk: torch.Tensor,
-        xq: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-
-        end_pos = start_pos + seqlen
-        current_start = 0 if start_pos == 0 else start_pos
-
-        if self.is_mixed_precision:
-            xk_out = xk[..., :self.outlier_dim]
-            xk_norm = xk[..., self.outlier_dim:]
-            xv_out = xv[..., :self.outlier_dim]
-            xv_norm = xv[..., self.outlier_dim:]
-
-            k_dequant_out = self._fetch_decompressed_cache_slice(
-                self.outlier_compressor,
-                self.cache_k_bstring_outlier,
-                self.cache_k_qjl_outlier,
-                self.cache_k_orig_outlier,
-                self.cache_k_res_outlier,
-                bsz,
-                current_start,
-                end_pos,
-                xq.device,
-                xq.dtype,
-            )
-            k_dequant_norm = self._fetch_decompressed_cache_slice(
-                self.normal_compressor,
-                self.cache_k_bstring_normal,
-                self.cache_k_qjl_normal,
-                self.cache_k_orig_normal,
-                self.cache_k_res_normal,
-                bsz,
-                current_start,
-                end_pos,
-                xq.device,
-                xq.dtype,
-            )
-            v_dequant_out = self._fetch_decompressed_cache_slice(
-                self.outlier_compressor,
-                self.cache_v_bstring_outlier,
-                self.cache_v_qjl_outlier,
-                self.cache_v_orig_outlier,
-                self.cache_v_res_outlier,
-                bsz,
-                current_start,
-                end_pos,
-                xq.device,
-                xq.dtype,
-            )
-            v_dequant_norm = self._fetch_decompressed_cache_slice(
-                self.normal_compressor,
-                self.cache_v_bstring_normal,
-                self.cache_v_qjl_normal,
-                self.cache_v_orig_normal,
-                self.cache_v_res_normal,
-                bsz,
-                current_start,
-                end_pos,
-                xq.device,
-                xq.dtype,
-            )
-
-            dim_total = xk.shape[-1]
-            dim_out = xk_out.shape[-1]
-            dim_norm = xk_norm.shape[-1]
-
-            k_mse_out = (xk_out.float() - k_dequant_out.float()).square().mean()
-            k_mse_norm = (xk_norm.float() - k_dequant_norm.float()).square().mean()
-            v_mse_out = (xv_out.float() - v_dequant_out.float()).square().mean()
-            v_mse_norm = (xv_norm.float() - v_dequant_norm.float()).square().mean()
-
-            k_mse = ((dim_out * k_mse_out) + (dim_norm * k_mse_norm)) / dim_total
-            v_mse = ((dim_out * v_mse_out) + (dim_norm * v_mse_norm)) / dim_total
-
-            del k_dequant_out, k_dequant_norm, v_dequant_out, v_dequant_norm
-        else:
-            k_dequant = self._fetch_decompressed_cache_slice(
-                self.kv_cache_compressor,
-                self.cache_k_bstring,
-                self.cache_k_qjl,
-                self.cache_k_orig,
-                self.cache_k_res,
-                bsz,
-                current_start,
-                end_pos,
-                xq.device,
-                xq.dtype,
-            )
-            v_dequant = self._fetch_decompressed_cache_slice(
-                self.kv_cache_compressor,
-                self.cache_v_bstring,
-                self.cache_v_qjl,
-                self.cache_v_orig,
-                self.cache_v_res,
-                bsz,
-                current_start,
-                end_pos,
-                xq.device,
-                xq.dtype,
-            )
-
-            k_mse = (xk.float() - k_dequant.float()).square().mean()
-            v_mse = (xv.float() - v_dequant.float()).square().mean()
-
-            del k_dequant, v_dequant
-
-        return k_mse, v_mse
 
     def forward(
         self,
@@ -705,11 +588,6 @@ class Attention(nn.Module):
 
             output = self.attention(keys, values, xq, mask)
 
-        if self.use_mse:
-            k_mse, v_mse = self._compute_mse(bsz, seqlen, start_pos, xv, xk, xq)
-            token_count = bsz * seqlen
-            self.k_mse.setdefault(self.layer_n, []).append((k_mse, token_count))
-            self.v_mse.setdefault(self.layer_n, []).append((v_mse, token_count))
 
         output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
         result = self.wo(output)
