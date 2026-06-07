@@ -468,20 +468,14 @@ class LlamaGenerator:
 
 
 def format_prompt(prompt: str, context: str, sysprompt: str) -> str:
-        user_content = f"""Question: {prompt}
+    user_content = f"Context from the knowledge base:\n{context}\n\nQuery: {prompt}"
 
-Context from the knowledge base:
-{context}
-
-Answer the question using the provided context only. Include source citations."""
-
-
-        # Llama 3.1 chat template (IDs: <|begin_of_text|>=128000,
-        # <|start_header_id|>=128006, <|end_header_id|>=128007, <|eot_id|>=128009)
-        return (
+    # Llama 3.1 chat template (IDs: <|begin_of_text|>=128000,
+    # <|start_header_id|>=128006, <|end_header_id|>=128007, <|eot_id|>=128009)
+    return (
             f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n"
             f"{sysprompt}<|eot_id|>"
             f"<|start_header_id|>user<|end_header_id|>\n\n"
             f"{user_content}<|eot_id|>"
             f"<|start_header_id|>assistant<|end_header_id|>\n\n"
-        )
+    )
