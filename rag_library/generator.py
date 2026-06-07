@@ -224,7 +224,8 @@ class _LlamaGeneratorBase:
     """
     DEFAULT_SYSTEM_PROMPT = """You are a helpful technical assistant.
 Answer the user's question using ONLY the provided context.
-1. Be concise and accurate, and answer directly without repeating the question.
+1. Be concise and accurate.
+2. Answer directly without repeating the question.
 2. Cite your sources (document name and page number).
 3. Do not use outside knowledge.
 """
