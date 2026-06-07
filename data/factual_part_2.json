@@ -1,0 +1,58 @@
+[
+    {
+        "question": "Which recurrent neural network variant explicitly relies on a reset gate and an update gate to capture long-range dependencies without a separate cell state?",
+        "expected_answer": "The Gated Recurrent Unit (GRU).",
+        "source": "corpus.json",
+        "category": "factual",
+        "page": "9"
+    },
+    {
+        "question": "How does multi-head attention extend the vanilla self-attention mechanism computationally?",
+        "expected_answer": "It projects queries, keys, and values into multiple low-dimensional subspaces linearly, performs attention processing across these heads in parallel, concatenates the independent outputs, and applies a final linear projection.",
+        "source": "corpus.json",
+        "category": "factual",
+        "page": "10"
+    },
+    {
+        "question": "What specific matrix decomposition forms the foundation for Principal Component Analysis (PCA) optimization?",
+        "expected_answer": "Eigenvalue decomposition of the data covariance matrix (or Singular Value Decomposition of the design matrix).",
+        "source": "corpus.json",
+        "category": "factual",
+        "page": "11"
+    },
+    {
+        "question": "What are the three canonical data splits required to build and evaluate a deep learning pipeline cleanly?",
+        "expected_answer": "The training set, validation set, and test set.",
+        "source": "corpus.json",
+        "category": "factual",
+        "page": "12"
+    },
+    {
+        "question": "What mathematical constraint determines whether an optimization problem is considered strictly convex?",
+        "expected_answer": "The line segment between any two distinct points on the graph of the cost function lies strictly above the graph, meaning its Hessian matrix is positive definite everywhere.",
+        "source": "corpus.json",
+        "category": "factual",
+        "page": "13"
+    },
+    {
+        "question": "What structural property separates a convolutional layer from a fully connected layer regarding parameter efficiency?",
+        "expected_answer": "Local connectivity (or sparse interactions) and parameter sharing (or weight reuse across spatial positions).",
+        "source": "corpus.json",
+        "category": "factual",
+        "page": "14"
+    },
+    {
+        "question": "What specific formulation distinguishes Adam from the RMSProp optimizer?",
+        "expected_answer": "Adam tracks both the first raw moment (the exponentially decaying average of past gradients) and the second uncentered moment, incorporating bias correction terms for both.",
+        "source": "corpus.json",
+        "category": "factual",
+        "page": "3"
+    },
+    {
+        "question": "What phenomenon occurs when the gradients flowing backward through a deep architecture approach zero, preventing earlier layers from updating?",
+        "expected_answer": "The vanishing gradient problem.",
+        "source": "corpus.json",
+        "category": "factual",
+        "page": "15"
+    }
+]

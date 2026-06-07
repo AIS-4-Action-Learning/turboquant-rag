@@ -1,0 +1,7 @@
+trial_number,bit_width,group_size,model_type,context_question,question_type,evaluation,perplexity,rmse_key,rmse_value
+0,2.0,128,Compressed,How does the memory bandwidth efficiency of an NVIDIA Blackwell H200 GPU compare to an AMD Instinct MI300X accelerator when running FP4 inference routines?,out-of-scope,0.0,16.379526138305664,1.306650161743164,0.21008652448654175
+1,2.0,128,Compressed,What are the current pricing brackets and infrastructure costs for running distributed Kubernetes training nodes on Amazon Web Services clusters?,out-of-scope,0.0,16.729597091674805,1.289637804031372,0.21131041646003723
+2,2.0,128,Compressed,How do you configure a physical Cisco Nexus switch environment to optimize low-latency RDMA over Converged Edge traffic?,out-of-scope,0.0,16.40882682800293,1.2992632389068604,0.20900847017765045
+3,2.0,128,Compressed,What are the exact regulatory compliance steps needed to secure health data under the European Union GDPR guidelines when deploying medical imaging models?,out-of-scope,0.0,16.375431060791016,1.2244789600372314,0.21003180742263794
+4,2.0,128,Compressed,Can you provide the complete full-stack C++ implementation for a custom CUDA kernel executing fused flash attention on specialized edge computing hardware?,out-of-scope,0.0,18.384653091430664,1.2249698638916016,0.21089203655719757
+5,2.0,128,Compressed,What are the corporate revenue metrics and market capitalization projections for deep learning infrastructure providers in the coming fiscal year?,out-of-scope,0.0,16.25302505493164,1.2999305725097656,0.20922447741031647
