@@ -15,6 +15,7 @@ Lifecycle:
 """
 
 import json
+import numpy as np
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 
@@ -170,31 +171,39 @@ class RAG:
 
             # 2. Sort from highest to lowest logit
             sorted_chunks = sorted(chunks, key=lambda x: x["score"], reverse=True)
+            max_score = sorted_chunks[0]["score"]
 
-            # Absolute pass: If any chunk is phenomenally good, keep it immediately
-
-            if sorted_chunks[0]["score"] >= -0.5:
+            # 3. ABSOLUTE PASS: Clear Factual Matches
+            if max_score >= -0.5:
                 return [chunk for chunk in sorted_chunks if chunk["score"] >= -0.5]
 
-            # 3. DYNAMIC SPREAD EVALUATION (No category cheating)
-            # Calculate the logit gap between the 1st chunk and the 3rd chunk
-            if len(sorted_chunks) >= 3:
-                top_gap = sorted_chunks[0]["score"] - sorted_chunks[2]["score"]
+            # 4. ABSOLUTE FAIL: Pure Garbage (No fluke match at all)
+            if max_score < -4.5:
+                return []
 
-            # If the gap is small (e.g., less than 1.5 logits), it means the evidence
-            # is spread across multiple chunks. This is a Cross-Reference query!
-            # We safely keep the top chunks.
-            if top_gap < 1.5 and sorted_chunks[0]["score"] > -4.0:
-                return sorted_chunks[:2]
+            # 5. THE DISAMBIGUATION ZONE (-4.5 < max_score < -0.5)
+            # We use the top 3 chunks to calculate the Entropy Distribution
+            top_k = min(3, len(sorted_chunks))
+            top_scores = np.array([c["score"] for c in sorted_chunks[:top_k]])
 
-            # 4. If the top gap is massive, it means the first chunk was an isolated fluke 
-            # match and the rest is garbage. This is an Out-of-Scope query!
-            # Return empty list to trigger the Puppet Context refusal rule.
+            # Calculate Softmax (with max subtraction for numerical stability)
+            exp_scores = np.exp(top_scores - np.max(top_scores))
+            probs = exp_scores / np.sum(exp_scores)
+
+            # Calculate Shannon Entropy
+            entropy = -np.sum(probs * np.log(probs + 1e-9))
+
+            # 6. DECISION GATING
+            # Max entropy for k=3 is ~1.09. 
+            # > 0.75 means the scores are flat (Cross-Reference: multiple partial clues)
+            if entropy > 0.75:
+                return sorted_chunks[:3]  # Keep top 3 for LLM synthesis
+
+            # < 0.75 means there is a sharp dropoff (Out-of-Scope: an isolated fluke match)
             return []
 
         except Exception as e:
             raise RuntimeError(f"Failed to rerank chunks. Reason: {e}")
-
 
     def query(self, query: str, k: Optional[int] = None, omit_sysprompt: bool = False) -> Dict:
         """Run the full RAG pipeline: retrieve + generate.
