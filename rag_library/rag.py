@@ -156,22 +156,44 @@ class RAG:
         return self.vector_store.search(query_embedding, k=k)
 
 
-    def rerank_filter(self, query: str, chunks: List[Dict], threshold: float = 0.0) -> List[Dict]:
+    def rerank_filter(self, query: str, chunks: List[Dict]) -> List[Dict]:
+        if not chunks:
+            return []
+
         try:
-            pairs = [(query, chunk["text"]) for chunk in chunks]
+            # 1. Compute Cross-Encoder logits
+            pairs = [[query, chunk["text"]] for chunk in chunks]
+            scores = self.reranker.predict(pairs)
 
-            logits = self.reranker.predict(pairs)
-
-            for score, chunk in zip(logits, chunks):
+            for chunk, score in zip(chunks, scores):
                 chunk["score"] = float(score)
 
+            # 2. Sort from highest to lowest logit
             sorted_chunks = sorted(chunks, key=lambda x: x["score"], reverse=True)
-            print(f"Highest chunk score {sorted_chunks[0]["score"]}")
 
-            return [chunk for chunk in sorted_chunks if chunk["score"] > threshold]
+            # Absolute pass: If any chunk is phenomenally good, keep it immediately
+
+            if sorted_chunks[0]["score"] >= -0.5:
+                return [chunk for chunk in sorted_chunks if chunk["score"] >= -0.5]
+
+            # 3. DYNAMIC SPREAD EVALUATION (No category cheating)
+            # Calculate the logit gap between the 1st chunk and the 3rd chunk
+            if len(sorted_chunks) >= 3:
+                top_gap = sorted_chunks[0]["score"] - sorted_chunks[2]["score"]
+
+            # If the gap is small (e.g., less than 1.5 logits), it means the evidence
+            # is spread across multiple chunks. This is a Cross-Reference query!
+            # We safely keep the top chunks.
+            if top_gap < 1.5 and sorted_chunks[0]["score"] > -4.0:
+                return sorted_chunks[:2]
+
+            # 4. If the top gap is massive, it means the first chunk was an isolated fluke 
+            # match and the rest is garbage. This is an Out-of-Scope query!
+            # Return empty list to trigger the Puppet Context refusal rule.
+            return []
 
         except Exception as e:
-            raise RuntimeError(f"Failed to rerank and retrieve for the following reason: {e}")
+            raise RuntimeError(f"Failed to rerank chunks. Reason: {e}")
 
 
     def query(self, query: str, k: Optional[int] = None, omit_sysprompt: bool = False) -> Dict:
