@@ -405,7 +405,9 @@ class LlamaGenerator:
         try:
             ppl = -1.0
             generated_token = []
-            self._reset_mse(llama)
+
+            if isinstance(llama, LlamaCompressed):
+                self._reset_mse(llama)
 
             with torch.no_grad():
                 current_pos = 0

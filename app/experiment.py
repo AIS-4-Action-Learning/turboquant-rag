@@ -7,14 +7,11 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-import torch
 
 from app import N_TRIALS
 from app.llama_models import LlamaBF16, LlamaCompressed
 from app.metrics import (
     eval_correctness,
-    question_answering_accuracy,
-    zero_shot_accuracy,
 )
 from rag_library import (
     BF16LlamaGenerator,
@@ -307,14 +304,17 @@ class Experiment:
                     self.embedder,
                 )
 
+                rmse_k = response["rmse_k"] if response["rmse_k"] is not None else 0.0
+                rmse_v = response["rmse_v"] if response["rmse_v"] is not None else 0.0
+
                 self._log_trial(
                     index=index,
                     question=question,
                     category=category,
                     evaluation=evaluation,
                     perplexity=response["perplexity"],
-                    rmse_k=response["rmse_k"],
-                    rmse_v=response["rmse_v"],
+                    rmse_k=rmse_k,
+                    rmse_v=rmse_v,
                 )
 
                 print(f"RMSE Key: {response["rmse_k"]}")
