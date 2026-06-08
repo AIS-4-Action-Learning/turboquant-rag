@@ -1,0 +1,7 @@
+trial_number,bit_width,group_size,model_type,context_question,question_type,evaluation,perplexity,rmse_key,rmse_value
+0,,,BF16,How do the parameter initialization bounds described in Section 8 intersect with the optimization dynamics of Adam versus SGD with Momentum as covered in the text?,cross-reference,1.0,11.781621932983398,0.0,0.0
+1,,,BF16,Analyze how applying Dropout regularization during training impacts the downstream tracking behavior of Batch Normalization layers during model evaluation.,cross-reference,1.0,9.106057167053223,0.0,0.0
+2,,,BF16,Trace how the geometric assumptions of Convex Optimization Theory map onto the specific empirical loss landscapes observed in deep Convolutional Networks.,cross-reference,0.0,13.080129623413086,0.0,0.0
+3,,,BF16,Contrast the structural approach to handling exploding gradients inside recurrent layouts (like GRUs) against how feedforward networks (like Transformers) handle them using attention structures.,cross-reference,1.0,10.943960189819336,0.0,0.0
+4,,,BF16,How do the theoretical capacity limits discussed in Generalization Theory affect the decision to apply dimensionality reduction strategies like PCA before training a deep neural network?,cross-reference,1.0,13.006832122802734,0.0,0.0
+5,,,BF16,Explain the interaction between the cross-entropy loss function properties and the final classification layers across both multi-class and multi-label task setups.,cross-reference,1.0,7.284053325653076,0.0,0.0

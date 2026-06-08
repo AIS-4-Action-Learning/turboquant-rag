@@ -1,0 +1,17 @@
+trial_number,bit_width,group_size,model_type,context_question,question_type,evaluation,perplexity,rmse_key,rmse_value
+0,2.5,128,Compressed,Which recurrent neural network variant explicitly relies on a reset gate and an update gate to capture long-range dependencies without a separate cell state?,factual,0.0,6.736977577209473,1.2515909671783447,0.19378601014614105
+1,2.5,128,Compressed,How does multi-head attention extend the vanilla self-attention mechanism computationally?,factual,0.0,12.653460502624512,1.2057827711105347,0.19413229823112488
+2,2.5,128,Compressed,What specific matrix decomposition forms the foundation for Principal Component Analysis (PCA) optimization?,factual,0.0,15.968244552612305,1.2216061353683472,0.19478151202201843
+3,2.5,128,Compressed,What are the three canonical data splits required to build and evaluate a deep learning pipeline cleanly?,factual,0.0,16.421852111816406,1.2362216711044312,0.19145381450653076
+4,2.5,128,Compressed,What mathematical constraint determines whether an optimization problem is considered strictly convex?,factual,0.0,7.057506561279297,1.2465537786483765,0.19421499967575073
+5,2.5,128,Compressed,What structural property separates a convolutional layer from a fully connected layer regarding parameter efficiency?,factual,0.0,9.9525728225708,1.2411590814590454,0.19372308254241943
+6,2.5,128,Compressed,What specific formulation distinguishes Adam from the RMSProp optimizer?,factual,0.0,17.399538040161133,1.2261886596679688,0.19220785796642303
+7,2.5,128,Compressed,"What phenomenon occurs when the gradients flowing backward through a deep architecture approach zero, preventing earlier layers from updating?",factual,0.0,13.212292671203613,1.2248754501342773,0.19344070553779602
+8,2.5,128,Compressed,What is the primary difference between a matrix and a tensor as described in the linear algebra introduction?,factual,0.0,7.312730312347412,1.2513006925582886,0.19160209596157074
+9,2.5,128,Compressed,What mathematical operation describes the derivative of a matrix with respect to a vector?,factual,0.0,5.69816780090332,1.2907140254974365,0.19266821444034576
+10,2.5,128,Compressed,Which optimization algorithm generalizes standard gradient descent by incorporating an exponentially decaying average of past gradients to maintain momentum?,factual,0.0,7.467040538787842,1.2818821668624878,0.19331644475460052
+11,2.5,128,Compressed,What is the mathematical formulation of the dropout regularization technique applied to a hidden layer activation vector?,factual,0.0,5.882692337036133,1.273606538772583,0.19071753323078156
+12,2.5,128,Compressed,"According to the text, what specific failure mode does batch normalization alleviate during the training of deep networks?",factual,0.0,7.857662200927734,1.2602161169052124,0.1915941685438156
+13,2.5,128,Compressed,What is the structural difference between standard cross-entropy loss and binary cross-entropy loss formulas?,factual,0.0,4.278275966644287,1.307169795036316,0.1939980685710907
+14,2.5,128,Compressed,How is the capacity of a statistical model defined in relation to the phenomena of overfitting and underfitting?,factual,0.0,8.676198959350586,1.2647684812545776,0.1913195252418518
+15,2.5,128,Compressed,What is the standard weight initialization strategy proposed by Xavier Glorot and Yoshua Bengio for deep networks using symmetric activation functions?,factual,0.0,8.719834327697754,1.2449777126312256,0.19291459023952484

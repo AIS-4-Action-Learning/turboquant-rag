@@ -3,7 +3,7 @@ from typing import List
 import pandas as pd
 import numpy as np
 
-TRIALS_ROOT = "results/bf16/"
+TRIALS_ROOT = "results/3/"
 
 TRIAL_PATHS = [
     TRIALS_ROOT + "trial_1.csv",
@@ -96,4 +96,4 @@ if __name__ == '__main__':
     # Ensure the results directory exists before saving
     os.makedirs("results", exist_ok=True)
     print("Aggregating data...")
-    main(1)
+    main(3)
