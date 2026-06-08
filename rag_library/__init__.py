@@ -22,6 +22,13 @@ __all__ = [
     "OpenAIEmbedder",
     "GeminiEmbedder",
     "BGEmbedder",
+    "NvidiaSmiPoller",
+    "MeasurementResult",
+    "QuestionBenchmarkRunner",
+    "load_questions",
+    "reset_vram_tracker",
+    "get_vram_snapshot",
+    "make_profiler",
 ]
 
 _EXPORTS = {
@@ -37,6 +44,13 @@ _EXPORTS = {
     "OpenAIEmbedder": ("rag_library.embedder", "OpenAIEmbedder"),
     "GeminiEmbedder": ("rag_library.embedder", "GeminiEmbedder"),
     "BGEmbedder": ("rag_library.embedder", "BGEmbedder"),
+    "NvidiaSmiPoller": ("rag_library.telemetry", "NvidiaSmiPoller"),
+    "MeasurementResult": ("rag_library.telemetry", "MeasurementResult"),
+    "reset_vram_tracker": ("rag_library.telemetry", "reset_vram_tracker"),
+    "get_vram_snapshot": ("rag_library.telemetry", "get_vram_snapshot"),
+    "make_profiler": ("rag_library.telemetry", "make_profiler"),
+    "QuestionBenchmarkRunner": ("rag_library.benchmarks", "QuestionBenchmarkRunner"),
+    "load_questions": ("rag_library.benchmarks", "load_questions"),
 }
 
 

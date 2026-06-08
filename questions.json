@@ -1,0 +1,29 @@
+{
+  "questions": [
+    {
+      "id": "q1",
+      "question": "How does backpropagation compute gradients?",
+      "reference_answer": "Backpropagation computes gradients by applying the chain rule from the output layer backward through the network."
+    },
+    {
+      "id": "q2",
+      "question": "Why are convolutional neural networks parameter-efficient?",
+      "reference_answer": "CNNs use shared weights and local receptive fields, which reduces the number of learnable parameters."
+    },
+    {
+      "id": "q3",
+      "question": "What is the main advantage of self-attention in Transformers?",
+      "reference_answer": "Self-attention lets the model weigh relationships across all positions in the sequence and capture long-range dependencies."
+    },
+    {
+      "id": "q4",
+      "question": "What does a vector store do in a RAG pipeline?",
+      "reference_answer": "A vector store indexes embeddings and retrieves the most similar chunks for a query."
+    },
+    {
+      "id": "q5",
+      "question": "What is the role of the chunker in RAG?",
+      "reference_answer": "The chunker splits documents into overlapping text segments so they can be embedded and retrieved efficiently."
+    }
+  ]
+}

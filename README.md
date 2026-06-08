@@ -218,6 +218,50 @@ rag = RAG(
 # ... same workflow as Gemini
 ```
 
+---
+
+## 5. Question-level profiling benchmark
+
+To reproduce the profiling-style experiment from `junior_profiling.ipynb`, the repo now includes:
+
+- `rag_library.telemetry` for TTFT, TPOT, VRAM, GPU-utilization, and result persistence
+- `rag_library.benchmarks` for loading `questions.json` and running a user-defined subset of questions
+- `questions.json` at the repo root as a starter schema
+- `notebooks/Junior_Question_Benchmark.ipynb` as an end-to-end runnable notebook
+
+### `questions.json` format
+
+You can use either a top-level list or a top-level object with a `questions` key. Each item can contain:
+
+- `id` or `question_id`
+- `question`
+- `reference_answer` or `answer` for optional exact-match / F1 scoring
+
+Example:
+
+```json
+{
+  "questions": [
+    {
+      "id": "q1",
+      "question": "How does backpropagation compute gradients?",
+      "reference_answer": "By applying the chain rule backward through the network."
+    }
+  ]
+}
+```
+
+### Run the benchmark notebook
+
+Open `notebooks/Junior_Question_Benchmark.ipynb`, set `QUESTION_LIMIT`, and run the cells. Results are written to `results/question_benchmark/` as JSONL rows with:
+
+- TTFT
+- TPOT
+- total time
+- `torch.cuda` peak VRAM
+- `nvidia-smi` peak VRAM and mean GPU utilization
+- optional exact match and token F1
+
 ### Llama generators (BF16 or TurboQuant)
 
 Llama-based generators can still be used for answering, but retrieval should
