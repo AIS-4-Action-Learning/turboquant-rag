@@ -1,0 +1,9 @@
+trial_number,bit_width,group_size,model_type,context_question,question_type,evaluation,perplexity,rmse_key,rmse_value
+0,4.0,128,Compressed,Which recurrent neural network variant explicitly relies on a reset gate and an update gate to capture long-range dependencies without a separate cell state?,factual,1.0,6.736977577209473,0.46227899193763733,0.07476227730512619
+1,4.0,128,Compressed,How does multi-head attention extend the vanilla self-attention mechanism computationally?,factual,0.0,12.653460502624512,0.4570777118206024,0.0748668760061264
+2,4.0,128,Compressed,What specific matrix decomposition forms the foundation for Principal Component Analysis (PCA) optimization?,factual,0.0,15.968244552612305,0.4357726573944092,0.07462438941001892
+3,4.0,128,Compressed,What are the three canonical data splits required to build and evaluate a deep learning pipeline cleanly?,factual,0.0,16.421852111816406,0.4626200497150421,0.07368090003728867
+4,4.0,128,Compressed,What mathematical constraint determines whether an optimization problem is considered strictly convex?,factual,0.0,7.057506561279297,0.463781476020813,0.07533442229032516
+5,4.0,128,Compressed,What structural property separates a convolutional layer from a fully connected layer regarding parameter efficiency?,factual,0.0,9.9525728225708,0.46823737025260925,0.07473335415124893
+6,4.0,128,Compressed,What specific formulation distinguishes Adam from the RMSProp optimizer?,factual,0.0,17.399538040161133,0.46113935112953186,0.0741957351565361
+7,4.0,128,Compressed,"What phenomenon occurs when the gradients flowing backward through a deep architecture approach zero, preventing earlier layers from updating?",factual,0.0,13.212292671203613,0.45601919293403625,0.07440809160470963
