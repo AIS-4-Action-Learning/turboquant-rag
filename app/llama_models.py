@@ -392,32 +392,38 @@ class LlamaGenerator:
                     current_token = next_token.unsqueeze(0)
                     current_pos += logits.shape[1]
 
-            response = llama.tokenizer.decode(generated_token)
-            for tok in ("<|eot_id|>", "<|eos_id|>", "<|end_of_text|>",
-                    "  Special", "  Token", ):
-                response = response.replace(tok, "")
-
-            # If the model leaked a Llama 3 header template, truncate it immediately
-            if "<|" in response:
-                response = response.split("<|")[0].strip()
-            else:
-                response = response.strip()
-
-            return response
+            return llama.tokenizer.decode(generated_token).strip()
         except Exception as e:
             raise RuntimeError(f"Failed to generate response. Reason: {e}")
 
 
 
 def format_prompt(prompt: str, context: str, sysprompt: str) -> str:
-    user_content = f"Context from the knowledge base:\n{context}\n\nQuery: {prompt}"
+    """Build a plain-text prompt for the Llama 3.1 base model.
 
-    # Llama 3.1 chat template (IDs: <|begin_of_text|>=128000,
-    # <|start_header_id|>=128006, <|end_header_id|>=128007, <|eot_id|>=128009)
-    return (
-        f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n"
-        f"{sysprompt}<|eot_id|>"
-        f"<|start_header_id|>user<|end_header_id|>\n\n"
-        f"{user_content}<|eot_id|>"
-        f"<|start_header_id|>assistant<|end_header_id|>\n\n"
+    The checkpoint configured in `.env` is `Llama3.1-8B`, which is the base
+    model. It should receive a single instruction-style prompt, not the
+    chat-template role tokens used by instruct-tuned checkpoints.
+    """
+
+    sections = []
+
+    if sysprompt.strip():
+        sections.append(
+            "System:\n"
+            f"{sysprompt.strip()}"
+        )
+
+    sections.append(
+        "Context:\n"
+        f"{context.strip()}"
     )
+
+    sections.append(
+        "Question:\n"
+        f"{prompt.strip()}"
+    )
+
+    sections.append("Answer:")
+
+    return "\n\n".join(sections)

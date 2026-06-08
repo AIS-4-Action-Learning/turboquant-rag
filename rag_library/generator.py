@@ -233,15 +233,8 @@ Answer the user's question using ONLY the provided context.
 # If the provided context does not contain enough information to answer the question, say: "I can't answer this question"
 
     def _format_prompt(self, query: str, context: str, omit_sysprompt: bool) -> str:
-        """Format query + context into a Llama 3.1 chat-template string.
-
-        Llama 3.1 is instruction-tuned on a strict chat template. Without it,
-        the model produces incoherent noise and repetitive loops.
-        """
+        """Format query + context into a plain-text prompt for Llama 3.1 base."""
         sysprompt = self.DEFAULT_SYSTEM_PROMPT if not omit_sysprompt else ""
-
-        # Llama 3.1 chat template (IDs: <|begin_of_text|>=128000,
-        # <|start_header_id|>=128006, <|end_header_id|>=128007, <|eot_id|>=128009)
         return format_prompt(query, context, sysprompt)
 
 # ---------------------------------------------------------------------------
