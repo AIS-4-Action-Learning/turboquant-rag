@@ -1,0 +1,17 @@
+=== FREQUENTIST SIGNIFICANCE REPORT (ANOVA) ===
+
+Metric: PERPLEXITY
+F-Statistic: 0.1515
+P-Value: 9.6219e-01
+Conclusion: NO statistically significant variance across bit-widths.
+----------------------------------------
+Metric: RMSE_KEY
+F-Statistic: 11143.3676
+P-Value: 2.5483e-257
+Conclusion: Statistically SIGNIFICANT variance across bit-widths.
+----------------------------------------
+Metric: RMSE_VALUE
+F-Statistic: 179228.6765
+P-Value: 0.0000e+00
+Conclusion: Statistically SIGNIFICANT variance across bit-widths.
+----------------------------------------
