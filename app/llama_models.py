@@ -355,6 +355,7 @@ class LlamaGenerator:
                  token_ids: Optional[List[int]],
                  llama: LlamaBF16 | LlamaCompressed,
                  max_gen_len: int = 1024) -> str:
+        fallback_response = "I don't have enough information to answer this."
 
         try:
             generated_token = []
@@ -392,19 +393,18 @@ class LlamaGenerator:
                     current_token = next_token.unsqueeze(0)
                     current_pos += logits.shape[1]
 
-            return llama.tokenizer.decode(generated_token).strip()
+            response = llama.tokenizer.decode(generated_token).strip()
+            if not response:
+                return fallback_response
+
+            return response
         except Exception as e:
             raise RuntimeError(f"Failed to generate response. Reason: {e}")
 
 
 
 def format_prompt(prompt: str, context: str, sysprompt: str) -> str:
-    """Build a plain-text prompt for the Llama 3.1 base model.
-
-    The checkpoint configured in `.env` is `Llama3.1-8B`, which is the base
-    model. It should receive a single instruction-style prompt, not the
-    chat-template role tokens used by instruct-tuned checkpoints.
-    """
+    """Build a plain-text prompt for the Llama 3.1 base model."""
 
     sections = []
 
@@ -426,4 +426,4 @@ def format_prompt(prompt: str, context: str, sysprompt: str) -> str:
 
     sections.append("Answer:")
 
-    return "\n\n".join(sections)
+    return "\n\n".join(sections) + " "
