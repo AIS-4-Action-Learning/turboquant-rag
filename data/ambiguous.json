@@ -1,0 +1,37 @@
+[
+    {
+        "question": "What is the best neural network structure to select when optimizing for overall model precision on a generic real-world dataset?",
+        "expected_answer": null,
+        "source": null,
+        "category": "ambiguous",
+        "page": null
+    },
+    {
+        "question": "At what exact iteration point should a practitioner stop tuning the learning rate parameter inside a standard optimizer configuration?",
+        "expected_answer": null,
+        "source": null,
+        "category": "ambiguous",
+        "page": null
+    },
+    {
+        "question": "Does applying dropout layers provide a better regularized performance outcome than adding standard weight decay terms?",
+        "expected_answer": null,
+        "source": null,
+        "category": "ambiguous",
+        "page": null
+    },
+    {
+        "question": "What is an acceptable training loss value when building a transformer architecture from scratch?",
+        "expected_answer": null,
+        "source": null,
+        "category": "ambiguous",
+        "page": null
+    },
+    {
+        "question": "Why do some optimization runs converge fast while other identical runs show completely unexpected behaviors?",
+        "expected_answer": null,
+        "source": null,
+        "category": "ambiguous",
+        "page": null
+    }
+]
