@@ -294,6 +294,8 @@ class SIMTSingleCompressor(TurboQuantCompressorBase):
                 ctypes.c_int(cuda_memcpy_device_to_device),
             )
 
+            torch.cuda.synchronize()
+
             # --- THE FINAL BRIDGE FIX ---
             # 1. Force the C++ output (norm ~3.16) back to a unit-sphere (norm 1.0)
             current_norm = output.norm(p=2).clamp_min(1e-6)
@@ -568,6 +570,9 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
         if status != 0:
             raise RuntimeError(f"Fused attention failed with code {status}")
 
+        if output_f32.is_cuda:
+            torch.cuda.synchronize()
+
         return output_f32.to(dtype=original_dtype)
 
     def mixed_fused_attention(
@@ -657,6 +662,9 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
         if status != 0:
             raise RuntimeError(f"turboquant_fused_attention_mixed failed with code {status}")
 
+        if output_f32.is_cuda:
+            torch.cuda.synchronize()
+
         return output_f32.to(dtype=original_dtype)
 
     def compress_block(self, block: torch.Tensor) -> Tuple[float, float, bytes, bytes]:
@@ -735,6 +743,8 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
                 raise RuntimeError(
                     f"turboquant_prod_quantization_batch_direct_fused failed with code {status}"
                 )
+            if blocks_f32.is_cuda:
+                torch.cuda.synchronize()
             return bstrings, qjls, original_l2s, residual_l2s
 
         original_l2s.copy_(torch.linalg.norm(blocks_f32, dim=1))
@@ -749,6 +759,9 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
         )
         if status != 0:
             raise RuntimeError(f"turboquant_prod_quantization_batch_direct failed with code {status}")
+
+        if blocks_f32.is_cuda:
+            torch.cuda.synchronize()
 
         return bstrings, qjls, original_l2s, residual_l2s
 
@@ -928,6 +941,9 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
         )
         if status != 0:
             raise RuntimeError(f"turboquant_prod_dequantization_batch_direct failed with code {status}")
+
+        if output.is_cuda:
+            torch.cuda.synchronize()
 
         # C++ output has incorrect magnitude (~3.16 instead of 1.0).
         # Renormalize to unit sphere, then rescale by original_l2.
