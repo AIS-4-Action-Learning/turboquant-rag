@@ -227,9 +227,13 @@ class RAG:
 
         if not retrieved:
             context = "[Database: No relevant documents found. You MUST reply with exactly: I can't answer this question.]"
+            print("[WARNING::RAG]: no chunks retrieved after cross-encoder reranking")
         else:
             context = self._format_context(retrieved)
 
+        print(f"[INFO::RAG]: retrieved {len(retrieved)} after cross-encoder reranking")
+
+        print("[INFO::RAG]: generating answer")
         answer, ppl, rmse_k, rmse_v = self.generator.generate(
             query,
             context,

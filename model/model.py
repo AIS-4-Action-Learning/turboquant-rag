@@ -601,6 +601,7 @@ class Attention(nn.Module):
         # (n_batches, seqlen)
         bsz, seqlen, _ = x.shape
 
+        print("[INFO::Transformer]: computing query, key and value tensors")
         # Project input x to query, key, and value tensors using tensor-parallel linear layers
         xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
 
@@ -616,6 +617,8 @@ class Attention(nn.Module):
             # During prefill cache length is just the sequence length
             cache_len = start_pos + seqlen
 
+            print(f"[INFO::Transformer]: KV cache length = {cache_len}")
+
             # Set all of the quantization results device to "cuda"
             self._ensure_compressed_cache_device(xq.device)
 
@@ -627,6 +630,7 @@ class Attention(nn.Module):
                 xv_out = xv[..., :self.outlier_dim] # outlier value
                 xv_norm = xv[..., self.outlier_dim:] # normal value
 
+                print(f"[INFO::Transformer]: mixed precision quantizating {cache_len} keys and values")
                 # 2. Store independently
                 # Compress xk_out and store its quantization result in k_bstring, k_qjl, k_orig (original L2), and residual L2
                 self._store_compressed_cache(xk_out, bsz, seqlen, start_pos, self.outlier_compressor, self.cache_k_bstring_outlier, self.cache_k_qjl_outlier, self.cache_k_orig_outlier, self.cache_k_res_outlier)
@@ -635,6 +639,7 @@ class Attention(nn.Module):
                 self._store_compressed_cache(xv_norm, bsz, seqlen, start_pos, self.normal_compressor, self.cache_v_bstring_normal, self.cache_v_qjl_normal, self.cache_v_orig_normal, self.cache_v_res_normal)
 
                 if start_pos > 0:
+                    print("[INFO::Transformer]: applying fused dequantization flash attention")
                     output = self.outlier_compressor.mixed_fused_attention(
                         self.normal_compressor,
                         xq,
@@ -669,6 +674,8 @@ class Attention(nn.Module):
                     output = self.attention(xk, xv, xq, mask)
 
             else:
+                print(f"[INFO::Transformer]: single precision quantizating {cache_len} keys and values")
+
                 self._store_compressed_cache(xk, bsz, seqlen, start_pos, self.kv_cache_compressor, self.cache_k_bstring, self.cache_k_qjl, self.cache_k_orig, self.cache_k_res)
                 self._store_compressed_cache(xv, bsz, seqlen, start_pos, self.kv_cache_compressor, self.cache_v_bstring, self.cache_v_qjl, self.cache_v_orig, self.cache_v_res)
                 if start_pos > 0:

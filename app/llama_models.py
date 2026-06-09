@@ -416,12 +416,14 @@ class LlamaGenerator:
                 # Warmup loop for compressed KV cache
                 if seq_len > 1:
 
+                    print(f"[INFO::LlamaGenerator]: prefill phase -> passing {seq_len} tokens")
                     # Pass all prompt tokens up to the second-to-last one simultaneously.
                     prefill_prompt = tensor_tokens[:, :-1].contiguous()
                     logits = llama.model.forward(prefill_prompt, start_pos=0)
 
                     if token_ids is not None:
                         ppl = perplexity(logits, token_ids)
+                        print(f"[METRIC]: perplexity = {ppl}")
 
                     del logits, prefill_prompt
                     current_pos = seq_len - 1
@@ -431,6 +433,7 @@ class LlamaGenerator:
 
                 current_token = tensor_tokens[:, -1:].contiguous()
 
+                print("[INFO::LlamaGenerator]: autoregressive decode phase -> generating {max_gen_len} tokens")
                 for _ in range(max_gen_len):
                     logits = llama.model.forward(current_token, current_pos)
 
@@ -458,6 +461,8 @@ class LlamaGenerator:
 
             if isinstance(llama, LlamaCompressed):
                 rmse_k, rmse_v = self._report_rmse(llama)
+                print(f"[METRIC]: RMSE Key = {rmse_k}")
+                print(f"[METRIC]: RMSE Value = {rmse_v}")
                 return response.strip(), ppl, rmse_k, rmse_v
             elif isinstance(llama, LlamaBF16):
                 return response.strip(), ppl, None, None
