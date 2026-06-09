@@ -355,7 +355,6 @@ class LlamaGenerator:
                  token_ids: Optional[List[int]],
                  llama: LlamaBF16 | LlamaCompressed,
                  max_gen_len: int = 1024) -> str:
-        fallback_response = "I don't have enough information to answer this."
 
         try:
             generated_token = []
@@ -420,8 +419,6 @@ class LlamaGenerator:
                     current_pos += logits.shape[1]
 
             response = llama.tokenizer.decode(generated_token).strip()
-            if not response:
-                return fallback_response
 
             return response
         except Exception as e:
