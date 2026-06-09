@@ -434,7 +434,7 @@ def format_prompt(prompt: str, context: str, sysprompt: str) -> str:
 
     if sysprompt.strip():
         sections.append(
-            "System:\n"
+            "Instructions:\n"
             f"{sysprompt.strip()}"
         )
 
@@ -448,6 +448,9 @@ def format_prompt(prompt: str, context: str, sysprompt: str) -> str:
         f"{prompt.strip()}"
     )
 
-    sections.append("Answer:")
+    sections.append(
+        "Answer in one direct paragraph. "
+        "Do not use bullets or numbered lists."
+    )
 
     return "\n\n".join(sections) + " "

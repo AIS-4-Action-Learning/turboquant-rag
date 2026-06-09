@@ -20,7 +20,6 @@ from fairscale.nn.model_parallel.layers import (
     VocabParallelEmbedding,
 )
 from torch import nn
-import time
 from .args import ModelArgs
 
 # **NOTE**: This code is not runnable without installing `torch` and `fairscale`
@@ -471,12 +470,6 @@ class Attention(nn.Module):
         xv = xv.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
         xq, xk = apply_rotary_emb(xq, xk, freqs_cis=freqs_cis)
 
-        # --- PROFILER SETUP ---
-        store_start = torch.cuda.Event(enable_timing=True)
-        store_end = torch.cuda.Event(enable_timing=True)
-        attn_start = torch.cuda.Event(enable_timing=True)
-        attn_end = torch.cuda.Event(enable_timing=True)
-
         # Check if we are using the compressed version of llama
         if self.use_compressed_kv_cache:
             # Compute the total cache length (start position + current seqlen)
@@ -495,10 +488,6 @@ class Attention(nn.Module):
                 xv_norm = xv[..., self.outlier_dim:] # normal value
 
 
-                # --- SAFE STORAGE PROFILING ---
-                if xq.device.type == "cuda": torch.cuda.synchronize()
-                store_start = time.perf_counter()
-
                 # 2. Store independently
                 # Compress xk_out and store its quantization result in k_bstring, k_qjl, k_orig (original L2), and residual L2
                 self._store_compressed_cache(xk_out, bsz, seqlen, start_pos, self.outlier_compressor, self.cache_k_bstring_outlier, self.cache_k_qjl_outlier, self.cache_k_orig_outlier, self.cache_k_res_outlier)
@@ -506,11 +495,6 @@ class Attention(nn.Module):
                 self._store_compressed_cache(xv_out, bsz, seqlen, start_pos, self.outlier_compressor, self.cache_v_bstring_outlier, self.cache_v_qjl_outlier, self.cache_v_orig_outlier, self.cache_v_res_outlier)
                 self._store_compressed_cache(xv_norm, bsz, seqlen, start_pos, self.normal_compressor, self.cache_v_bstring_normal, self.cache_v_qjl_normal, self.cache_v_orig_normal, self.cache_v_res_normal)
 
-                if xq.device.type == "cuda": torch.cuda.synchronize()
-                store_end = time.perf_counter()
-
-                # --- SAFE COMPUTE PROFILING ---
-                attn_start = time.perf_counter()
                 if start_pos > 0:
                     output = self.outlier_compressor.mixed_fused_attention(
                         self.normal_compressor,
@@ -544,24 +528,9 @@ class Attention(nn.Module):
 
                 elif start_pos == 0:
                     output = self.attention(xk, xv, xq, mask)
-
-                if xq.device.type == "cuda": torch.cuda.synchronize()
-                attn_end = time.perf_counter()
-
-                # Sync and print (Mixed)
-                if xq.device.type == "cuda":
-                    store_ms = (store_end - store_start) * 1000
-                    compute_ms = (attn_end - attn_start) * 1000
-                    print(f"  [ATTN-LAYER]: Mixed | Store: {store_ms:.2f}ms | Compute: {compute_ms:.2f}ms")
             else:
-                # Profile Storage (Regular Compressed)
-                store_start.record()
                 self._store_compressed_cache(xk, bsz, seqlen, start_pos, self.kv_cache_compressor, self.cache_k_bstring, self.cache_k_qjl, self.cache_k_orig, self.cache_k_res)
                 self._store_compressed_cache(xv, bsz, seqlen, start_pos, self.kv_cache_compressor, self.cache_v_bstring, self.cache_v_qjl, self.cache_v_orig, self.cache_v_res)
-                store_end.record()
-
-                # Profile Attention Compute (Regular Compressed)
-                attn_start.record()
                 if start_pos > 0:
                     # Standard single-compressor fused attention
                     output = self.kv_cache_compressor.fused_attention(
@@ -584,32 +553,15 @@ class Attention(nn.Module):
                 elif start_pos == 0:
                     output = self.attention(xk, xv, xq, mask)
 
-                attn_end.record()
-
-                # Sync and print (Regular Compressed)
-                if xq.device.type == "cuda":
-                    torch.cuda.synchronize()
-                    print(f"  [ATTN-LAYER]: Compressed | Store: {store_start.elapsed_time(store_end):.2f}ms | Compute: {attn_start.elapsed_time(attn_end):.2f}ms")
-
         else:
-            store_start.record()
             self.cache_k = self.cache_k.to(xq)
             self.cache_v = self.cache_v.to(xq)
 
             self.cache_k[:bsz, start_pos : start_pos + seqlen] = xk
             self.cache_v[:bsz, start_pos : start_pos + seqlen] = xv
-            store_end.record()
-
-            attn_start.record()
             keys = self.cache_k[:bsz, : start_pos + seqlen]
             values = self.cache_v[:bsz, : start_pos + seqlen]
             output = self.attention(keys, values, xq, mask)
-            attn_end.record()
-
-            # Sync and print (Standard BF16)
-            if xq.device.type == "cuda":
-                torch.cuda.synchronize()
-                print(f"  [ATTN-LAYER]: Standard | Store: {store_start.elapsed_time(store_end):.2f}ms | Compute: {attn_start.elapsed_time(attn_end):.2f}ms")
 
         output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
         result = self.wo(output)

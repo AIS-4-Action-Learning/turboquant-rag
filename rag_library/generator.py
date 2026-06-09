@@ -222,15 +222,13 @@ class _LlamaGeneratorBase:
     instantiate it directly — they use BF16LlamaGenerator or
     TurboQuantLlamaGenerator.
     """
-    DEFAULT_SYSTEM_PROMPT = """You are a helpful technical assistant.
-Answer the user's question using ONLY the provided context.
-1. Be concise and accurate.
-2. Answer directly without repeating the question.
-2. Cite your sources (document name and page number).
-3. Do not use outside knowledge.
+    DEFAULT_SYSTEM_PROMPT = """You are a question-answering assistant.
+Use only the provided context.
+Return a direct answer in 1-3 sentences.
+Do not use bullets, numbered lists, markdown, or repeat the question.
+If the context does not contain enough information, reply exactly: I can't answer this question.
+If you cite a source, include at most one brief parenthetical citation at the end.
 """
-
-# If the provided context does not contain enough information to answer the question, say: "I can't answer this question"
 
     def _format_prompt(self, query: str, context: str, omit_sysprompt: bool) -> str:
         """Format query + context into a plain-text prompt for Llama 3.1 base."""
