@@ -259,6 +259,36 @@ class Attention(nn.Module):
 
         if (
             hasattr(compressor, "compress_chunk_tensor_direct")
+            and hasattr(compressor, "compress_chunk_tensor_direct_into")
+            and tensor.device.type == "cuda"
+            and c_bstring.device.type == "cuda"
+            and c_qjl.device.type == "cuda"
+            and c_orig.device.type == "cuda"
+            and c_res.device.type == "cuda"
+            and bsz == 1
+        ):
+            b_view = c_bstring[:bsz, start_pos:end_pos]
+            q_view = c_qjl[:bsz, start_pos:end_pos]
+            o_view = c_orig[:bsz, start_pos:end_pos]
+            r_view = c_res[:bsz, start_pos:end_pos]
+
+            if (
+                b_view.is_contiguous()
+                and q_view.is_contiguous()
+                and o_view.is_contiguous()
+                and r_view.is_contiguous()
+            ):
+                compressor.compress_chunk_tensor_direct_into(
+                    tensor.view(-1, compressor.block_size),
+                    b_view.reshape(-1, b_view.shape[-1]),
+                    q_view.reshape(-1, q_view.shape[-1]),
+                    o_view.reshape(-1),
+                    r_view.reshape(-1),
+                )
+                return
+
+        if (
+            hasattr(compressor, "compress_chunk_tensor_direct")
             and tensor.device.type == "cuda"
             and c_bstring.device.type == "cuda"
             and c_qjl.device.type == "cuda"
