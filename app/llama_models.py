@@ -448,8 +448,7 @@ def format_prompt(prompt: str, context: str, sysprompt: str) -> str:
     )
 
     sections.append(
-        "Answer in one direct paragraph. "
-        "Do not use bullets or numbered lists."
+        "Answer: "
     )
 
     return "\n\n".join(sections) + " "

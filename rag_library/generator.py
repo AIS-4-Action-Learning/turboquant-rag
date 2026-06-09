@@ -222,11 +222,10 @@ class _LlamaGeneratorBase:
     instantiate it directly — they use BF16LlamaGenerator or
     TurboQuantLlamaGenerator.
     """
-    DEFAULT_SYSTEM_PROMPT = """You are a question-answering assistant.
-Use only the provided context.
+    DEFAULT_SYSTEM_PROMPT = """You are a helpful technical assistant.
+Be concise and accurate
+Answer directly without repeating the question
 Return a direct answer in 1-3 sentences.
-Do not use bullets, numbered lists, markdown, or repeat the question.
-If you cite a source, include at most one brief parenthetical citation at the end.
 """
 
     def _format_prompt(self, query: str, context: str, omit_sysprompt: bool) -> str:
