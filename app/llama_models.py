@@ -363,49 +363,23 @@ class LlamaGenerator:
                 current_pos = 0
                 seq_len = tensor_tokens.shape[1]
 
-                print(f"\n[PROFILER]: --- STARTING GENERATION ---")
-                print(f"[PROFILER]: Prefill sequence length: {seq_len} tokens")
-
-                # Setup CUDA events
-                start_event = torch.cuda.Event(enable_timing=True)
-                end_event = torch.cuda.Event(enable_timing=True)
-
                 if seq_len > 1:
                     prefill_prompt = tensor_tokens[:, :-1].contiguous()
 
-                    # --- WARMUP (To absorb the CUDA Cold Start) ---
-                    print("[PROFILER]: Running cold-start warmup...")
                     _ = llama.model.forward(prefill_prompt, start_pos=0)
                     if llama.device == "cuda":
                         torch.cuda.synchronize()
-
-                    # --- ACTUAL PREFILL MEASUREMENT ---
-                    # Note: In a real system, you'd reset the KV cache here before 
-                    # running the real prefill, otherwise you are double-filling.
-                    print("[PROFILER]: Measuring pure prefill latency...")
-                    start_event.record()
-                    _ = llama.model.forward(prefill_prompt, start_pos=0)
-                    end_event.record()
-                    if llama.device == "cuda":
-                        torch.cuda.synchronize()
-                        prefill_ms = start_event.elapsed_time(end_event)
-                        print(f"[PROFILER]: ✅ Prefill Phase Total: {prefill_ms:.2f} ms")
 
                     current_pos = seq_len - 1
 
                 current_token = tensor_tokens[:, -1:].contiguous()
 
-                print("[PROFILER]: Measuring autoregressive decode latency...")
                 for step in range(max_gen_len):
-                    start_event.record()
 
                     logits = llama.model.forward(current_token, current_pos)
 
-                    end_event.record()
                     if llama.device == "cuda":
                         torch.cuda.synchronize()
-                        decode_ms = start_event.elapsed_time(end_event)
-                        print(f"[PROFILER]: Token {step + 1} (Pos {current_pos}): {decode_ms:.2f} ms")
 
                     next_token = torch.argmax(logits[:, -1], dim=-1)
                     next_token_id = next_token.item()

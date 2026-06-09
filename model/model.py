@@ -311,17 +311,6 @@ class Attention(nn.Module):
             )
             return
 
-        # --- DIAGNOSTIC BLOCK ---
-        # If the code reaches here, the fast path failed. Let's find out why.
-        print("\n[DEBUG]: FAST PATH FAILED. Checking conditions:")
-        print(f"  1. hasattr 'compress_chunk_tensor_direct': {hasattr(compressor, 'compress_chunk_tensor_direct')}")
-        print(f"  2. tensor is CUDA: {tensor.device.type == 'cuda'} (Actual: {tensor.device})")
-        print(f"  3. c_bstring is CUDA: {c_bstring.device.type == 'cuda'} (Actual: {c_bstring.device})")
-        print(f"  4. c_qjl is CUDA: {c_qjl.device.type == 'cuda'} (Actual: {c_qjl.device})")
-        print(f"  5. c_orig is CUDA: {c_orig.device.type == 'cuda'} (Actual: {c_orig.device})")
-        print(f"  6. c_res is CUDA: {c_res.device.type == 'cuda'} (Actual: {c_res.device})")
-        # ------------------------
-
         # Flatten input tensor for compression
         blocks = list(torch.unbind(tensor.view(-1, compressor.block_size), dim=0))
 
