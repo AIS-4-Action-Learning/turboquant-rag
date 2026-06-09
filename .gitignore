@@ -255,3 +255,5 @@ results/experiment_results.csv
 scripts/aggregate_experiments.py
 results/trials_results_exp_0.csv
 results/trials_results_exp_1.csv
+results_bf16.txt
+results_compressed.txt
