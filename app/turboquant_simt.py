@@ -11,6 +11,7 @@ from typing import Tuple, List, Optional
 import torch
 
 # Import common structures and base class from SIMD module
+from app import TURBOQUANT_DEBUG_FUSED_QUANT, TURBOQUANT_USE_FUSED_QUANT
 from app.turboquant_simd import Vector, QuantizationResult, TurboQuantCompressorBase
 
 
@@ -730,6 +731,124 @@ class SIMTBatchCompressor(TurboQuantCompressorBase):
 
         active_blocks = blocks_f32.index_select(0, active_indices).contiguous()
         active_count = active_blocks.shape[0]
+        use_fused = TURBOQUANT_USE_FUSED_QUANT and self._batch_direct_fused is not None
+
+        def _print_debug(label: str, fused_b: torch.Tensor, fused_q: torch.Tensor, fused_orig: torch.Tensor, fused_res: torch.Tensor) -> None:
+            print(
+                f"[TQ DEBUG] {label}: "
+                f"blocks.dtype={blocks.dtype} blocks_f32.dtype={blocks_f32.dtype} "
+                f"active_blocks.dtype={active_blocks.dtype} active_blocks.shape={tuple(active_blocks.shape)} "
+                f"active_blocks.stride={tuple(active_blocks.stride())}"
+            )
+            print(
+                f"[TQ DEBUG] {label}: "
+                f"original_l2 min/max={original_l2s.min().item():.6f}/{original_l2s.max().item():.6f} "
+                f"residual_l2 min/max={fused_res.min().item():.6f}/{fused_res.max().item():.6f}"
+            )
+
+        def _print_diff(label: str, fused_b: torch.Tensor, fused_q: torch.Tensor, fused_orig: torch.Tensor, fused_res: torch.Tensor) -> None:
+            b_diff = (fused_b != ref_b).sum().item()
+            q_diff = (fused_q != ref_q).sum().item()
+            orig_max = (fused_orig - ref_orig).abs().max().item()
+            res_max = (fused_res - ref_res).abs().max().item()
+            print(
+                f"[TQ DEBUG] {label}: "
+                f"b_diff={b_diff}/{ref_b.numel()} "
+                f"q_diff={q_diff}/{ref_q.numel()} "
+                f"orig_max_abs={orig_max:.6e} "
+                f"res_max_abs={res_max:.6e}"
+            )
+            if fused_b.numel() and ref_b.numel():
+                print(
+                    f"[TQ DEBUG] {label}: "
+                    f"fused_b0={fused_b[0].tolist()} ref_b0={ref_b[0].tolist()} "
+                    f"fused_q0={fused_q[0].tolist()} ref_q0={ref_q[0].tolist()}"
+                )
+
+        if use_fused:
+            active_bstrings = torch.empty((active_count, b_bytes), dtype=torch.uint8, device=blocks_f32.device)
+            active_qjls = torch.empty((active_count, q_bytes), dtype=torch.uint8, device=blocks_f32.device)
+            active_original_l2s = torch.empty(active_count, dtype=torch.float32, device=blocks_f32.device)
+            active_residual_l2s = torch.empty(active_count, dtype=torch.float32, device=blocks_f32.device)
+
+            status = self._batch_direct_fused(
+                self._batch_ctx,
+                ctypes.c_void_p(active_blocks.data_ptr()),
+                ctypes.c_void_p(active_bstrings.data_ptr()),
+                ctypes.c_void_p(active_qjls.data_ptr()),
+                ctypes.c_void_p(active_original_l2s.data_ptr()),
+                ctypes.c_void_p(active_residual_l2s.data_ptr()),
+                ctypes.c_uint32(active_count),
+            )
+            if status != 0:
+                raise RuntimeError(
+                    f"turboquant_prod_quantization_batch_direct_fused failed with code {status}"
+                )
+
+            if TURBOQUANT_DEBUG_FUSED_QUANT:
+                ref_b = torch.empty_like(active_bstrings)
+                ref_q = torch.empty_like(active_qjls)
+                ref_orig = torch.empty_like(active_original_l2s)
+                ref_res = torch.empty_like(active_residual_l2s)
+                ref_status = self._lib.turboquant_prod_quantization_batch_direct(
+                    self._batch_ctx,
+                    ctypes.c_void_p(active_blocks.data_ptr()),
+                    ctypes.c_void_p(ref_b.data_ptr()),
+                    ctypes.c_void_p(ref_q.data_ptr()),
+                    ctypes.c_void_p(ref_res.data_ptr()),
+                    ctypes.c_uint32(active_count),
+                )
+                if ref_status != 0:
+                    raise RuntimeError(
+                        f"turboquant_prod_quantization_batch_direct debug path failed with code {ref_status}"
+                    )
+                ref_orig.copy_(original_l2s.index_select(0, active_indices))
+                _print_debug("fused", active_bstrings, active_qjls, active_original_l2s, active_residual_l2s)
+                _print_diff("fused", active_bstrings, active_qjls, active_original_l2s, active_residual_l2s)
+
+                # Optional bf16 probe to test the dtype hypothesis without changing outputs.
+                probe_blocks = blocks.detach().to(dtype=torch.bfloat16).index_select(0, active_indices).contiguous()
+                probe_b = torch.empty_like(active_bstrings)
+                probe_q = torch.empty_like(active_qjls)
+                probe_orig = torch.empty_like(active_original_l2s)
+                probe_res = torch.empty_like(active_residual_l2s)
+                probe_status = self._batch_direct_fused(
+                    self._batch_ctx,
+                    ctypes.c_void_p(probe_blocks.data_ptr()),
+                    ctypes.c_void_p(probe_b.data_ptr()),
+                    ctypes.c_void_p(probe_q.data_ptr()),
+                    ctypes.c_void_p(probe_orig.data_ptr()),
+                    ctypes.c_void_p(probe_res.data_ptr()),
+                    ctypes.c_uint32(active_count),
+                )
+                if probe_status == 0:
+                    b_diff_probe = (probe_b != ref_b).sum().item()
+                    q_diff_probe = (probe_q != ref_q).sum().item()
+                    orig_max_probe = (probe_orig - ref_orig).abs().max().item()
+                    res_max_probe = (probe_res - ref_res).abs().max().item()
+                    print(
+                        f"[TQ DEBUG] bf16-probe: "
+                        f"b_diff={b_diff_probe}/{ref_b.numel()} "
+                        f"q_diff={q_diff_probe}/{ref_q.numel()} "
+                        f"orig_max_abs={orig_max_probe:.6e} "
+                        f"res_max_abs={res_max_probe:.6e} "
+                        f"probe_dtype={probe_blocks.dtype}"
+                    )
+                    if probe_b.numel():
+                        print(
+                            f"[TQ DEBUG] bf16-probe: "
+                            f"probe_b0={probe_b[0].tolist()} ref_b0={ref_b[0].tolist()} "
+                            f"probe_q0={probe_q[0].tolist()} ref_q0={ref_q[0].tolist()}"
+                        )
+                else:
+                    print(f"[TQ DEBUG] bf16-probe: fused kernel failed with code {probe_status}")
+
+            bstrings.index_copy_(0, active_indices, active_bstrings)
+            qjls.index_copy_(0, active_indices, active_qjls)
+            original_l2s.index_copy_(0, active_indices, active_original_l2s)
+            residual_l2s.index_copy_(0, active_indices, active_residual_l2s)
+            return bstrings, qjls, original_l2s, residual_l2s
+
         active_bstrings = torch.empty((active_count, b_bytes), dtype=torch.uint8, device=blocks_f32.device)
         active_qjls = torch.empty((active_count, q_bytes), dtype=torch.uint8, device=blocks_f32.device)
         active_residual_l2s = torch.empty(active_count, dtype=torch.float32, device=blocks_f32.device)
