@@ -257,3 +257,5 @@ results/trials_results_exp_0.csv
 results/trials_results_exp_1.csv
 results_bf16.txt
 results_compressed.txt
+turboquant_quantization_regression_summary.txt
+output.txt

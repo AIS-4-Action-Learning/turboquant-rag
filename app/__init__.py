@@ -99,7 +99,6 @@ def _env_flag(name: str, default: bool = False) -> bool:
 
 
 TURBOQUANT_USE_FUSED_QUANT = _env_flag("TURBOQUANT_USE_FUSED_QUANT", True)
-TURBOQUANT_DEBUG_FUSED_QUANT = _env_flag("TURBOQUANT_DEBUG_FUSED_QUANT", False)
 
 # ============================================================================
 # Compressor Factory - Import from appropriate module based on variant
