@@ -226,7 +226,6 @@ class _LlamaGeneratorBase:
 Use only the provided context.
 Return a direct answer in 1-3 sentences.
 Do not use bullets, numbered lists, markdown, or repeat the question.
-If the context does not contain enough information, reply exactly: I can't answer this question.
 If you cite a source, include at most one brief parenthetical citation at the end.
 """
 

@@ -438,10 +438,12 @@ def format_prompt(prompt: str, context: str, sysprompt: str) -> str:
             f"{sysprompt.strip()}"
         )
 
-    sections.append(
-        "Context:\n"
-        f"{context.strip()}"
-    )
+    context = context.strip()
+    if context:
+        sections.append(
+            "Context:\n"
+            f"{context}"
+        )
 
     sections.append(
         "Question:\n"
