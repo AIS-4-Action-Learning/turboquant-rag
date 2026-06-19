@@ -100,20 +100,9 @@ turboquant-rag/
 |   |-- llama_models.py         # BF16 and TurboQuant Llama wrappers
 |   |-- turboquant_simd.py      # CPU TurboQuant bindings
 |   `-- turboquant_simt.py      # CUDA TurboQuant bindings
-|-- docs/
-|   |-- PROJECT_DESCRIPTION.md  # Research and architecture overview
-|   |-- USER_MANUAL.md          # Reproducible setup and experiment workflow
-|   |-- CURRENT_IMPLEMENTATION.md
-|   |-- NEW_FEATURE.md
-|   |-- COMPARISON.md
-|   `-- ToDo.md
 |-- model/
 |   |-- args.py                 # Modified Llama model arguments
 |   `-- model.py                # Modified Transformer with compressed KV cache
-|-- notebooks/
-|   |-- Aishwarya_Benchmark.ipynb
-|   |-- Hamza_TurboQuant.ipynb
-|   `-- Junior_Profiling.ipynb
 |-- rag_library/
 |   |-- chunker.py
 |   |-- embedder.py
@@ -123,9 +112,6 @@ turboquant-rag/
 |-- scripts/
 |   `-- initialize_context.py
 |-- INSTALL                     # Native TurboQuant build script
-|-- SETUP.md                    # Additional setup notes
-|-- extract.py                  # PDF corpus extraction helper
-|-- example.py                  # RAG library demo
 `-- requirements.txt
 ```
 
