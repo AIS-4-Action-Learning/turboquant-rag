@@ -259,3 +259,5 @@ results_bf16.txt
 results_compressed.txt
 turboquant_quantization_regression_summary.txt
 output.txt
+MVP_Pitch_Notes.md
+MVP_Pitch_Notes.pdf
