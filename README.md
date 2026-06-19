@@ -1,4 +1,4 @@
-# turboquant-rag
+# Turboquant-RAG
 
 `turboquant-rag` is the EPITA research project repository for validating
 TurboQuant, a vector quantization algorithm, under a Retrieval-Augmented
