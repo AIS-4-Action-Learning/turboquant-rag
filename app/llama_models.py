@@ -2,7 +2,9 @@ import traceback as tr
 import ctypes
 import os
 from pathlib import Path
+from typing import List, Any, Optional, Tuple
 
+from numpy import isin
 import torch
 import json
 
@@ -12,6 +14,7 @@ from app import (
     TOKENIZER_PATH, get_turboquant_lib_path, TURBOQUANT_VARIANT,
     get_compressor_for_variant
 )
+
 from llama_models.llama3.args import ModelArgs
 from llama_models.llama3.model import Transformer
 from llama_models.llama3.tokenizer import Tokenizer
@@ -88,7 +91,7 @@ class Llama:
         except Exception as e:
             tr.print_exc()
 
-    def input_encoding(self, input_seq : str):
+    def input_encoding(self, input_seq: str) -> tuple[List[int], torch.Tensor]:
       try:
           tokens = self.tokenizer.encode(input_seq, bos=True, eos=False)
           # 1. Create on CPU first (Standard LongTensor)
@@ -174,12 +177,13 @@ class LlamaBF16(Llama):
 
 
 class LlamaCompressed(Llama):
-    def __init__(self, max_seq_length : int,
-                 batch_size : int,
-                 device : str = "cuda",
-                 is_batch : bool = True,
-                 bit_width : float = DEFAULT_BIT_WIDTH,
-                 dims : int = DEFAULT_DIMENSIONS):
+    def __init__(self, max_seq_length: int,
+                 batch_size: int,
+                 device: str = "cuda",
+                 is_batch: bool = True,
+                 bit_width: float = DEFAULT_BIT_WIDTH,
+                 dims: int = DEFAULT_DIMENSIONS
+                 ):
         # Setup fairscale for single-process usage
         _setup_single_process_distributed(device)
 
@@ -193,7 +197,7 @@ class LlamaCompressed(Llama):
             **self.params,
             max_seq_len=max_seq_length,
             max_batch_size=batch_size,
-            use_compressed_kv_cache=True
+            use_compressed_kv_cache=True,
         )
 
         # Use default context path if not set, looking in artifacts folder
@@ -293,24 +297,6 @@ class LlamaCompressed(Llama):
                 if isinstance(attr, torch.Tensor) and attr.device.type == "meta":
                     setattr(m, name, torch.zeros(tuple(attr.shape), dtype=attr.dtype, device=device))
 
-
-        # 2. Safe sweep for the custom KV Compressor (Catching lists/dicts)
-        # if hasattr(self, 'kv_compressor') and self.kv_compressor is not None:
-        #    for name, attr in vars(self.kv_compressor).items():
-        #        # Direct tensors
-        #        if isinstance(attr, torch.Tensor) and attr.device.type == "meta":
-        #            setattr(self.kv_compressor, name, torch.zeros(attr.shape, dtype=attr.dtype, device=device))
-        #        # Tensors hidden inside a list
-        #        elif isinstance(attr, list):
-        #            for i, v in enumerate(attr):
-        #                if isinstance(v, torch.Tensor) and v.device.type == "meta":
-        #                    attr[i] = torch.zeros(v.shape, dtype=v.dtype, device=device)
-        #        # Tensors hidden inside a dictionary
-        #        elif isinstance(attr, dict):
-        #            for k, v in attr.items():
-        #                if isinstance(v, torch.Tensor) and v.device.type == "meta":
-        #                    attr[k] = torch.zeros(v.shape, dtype=v.dtype, device=device)
-
         # 2. Safe sweep for the custom KV Compressors (Catching lists/dicts)
         compressors_to_sweep = []
         if self.is_mixed_precision:
@@ -349,7 +335,7 @@ class LlamaCompressed(Llama):
                 self.model.layers[i] = layer.to(device="cuda", dtype=torch.bfloat16)
 
             if device == "cuda":
-                torch.cuda.empty_cache() 
+                torch.cuda.empty_cache()
 
             # Move final Norm to CUDA
             self.model.norm = self.model.norm.to(device=device, dtype=torch.bfloat16)
@@ -363,71 +349,80 @@ class LlamaCompressed(Llama):
 
         self.model.eval()
 
+
 class LlamaGenerator:
-    def generate(self, tensor_tokens : torch.Tensor,
-                 llama : LlamaBF16 | LlamaCompressed,
-                 max_gen_len : int = 1024) -> str:
+    def generate(self, tensor_tokens: torch.Tensor,
+                 token_ids: Optional[List[int]],
+                 llama: LlamaBF16 | LlamaCompressed,
+                 max_gen_len: int = 1024) -> str:
 
         try:
             generated_token = []
-            import torch
 
             with torch.no_grad():
                 current_pos = 0
                 seq_len = tensor_tokens.shape[1]
 
-                # Warmup loop for compressed KV cache
                 if seq_len > 1:
-
-                    # Pass ALL prompt tokens up to the second-to-last one simultaneously
                     prefill_prompt = tensor_tokens[:, :-1].contiguous()
+
                     _ = llama.model.forward(prefill_prompt, start_pos=0)
+                    if llama.device == "cuda":
+                        torch.cuda.synchronize()
+
                     current_pos = seq_len - 1
+
+                current_token = tensor_tokens[:, -1:].contiguous()
+
+                for step in range(max_gen_len):
+
+                    logits = llama.model.forward(current_token, current_pos)
 
                     if llama.device == "cuda":
                         torch.cuda.synchronize()
 
-
-                current_token = tensor_tokens[:, -1:].contiguous()
-
-                for i in range(max_gen_len):
-                    logits = llama.model.forward(current_token, current_pos)
-
                     next_token = torch.argmax(logits[:, -1], dim=-1)
+                    next_token_id = next_token.item()
 
-                    if next_token.item() == llama.tokenizer.eos_id:
+                    if next_token_id == llama.tokenizer.eos_id:
                         break
 
-                    generated_token.append(next_token.item())
+                    generated_token.append(next_token_id)
 
                     current_token = next_token.unsqueeze(0)
                     current_pos += logits.shape[1]
 
-            response = llama.tokenizer.decode(generated_token)
-            for tok in ("<|eot_id|>", "<|eos_id|>", "<|end_of_text|>",
-                    "  Special", "  Token"):
-                response = response.replace(tok, "")
+            response = llama.tokenizer.decode(generated_token).strip()
 
-            return response.strip()
-        except Exception:
-            import traceback
-            traceback.print_exc()
-            return ""
-
-
+            return response
+        except Exception as e:
+            raise RuntimeError(f"Failed to generate response. Reason: {e}")
 
 def format_prompt(prompt: str, context: str, sysprompt: str) -> str:
-        user_content = (
-            f"Context:\n{context}\n\n"
-            f"Question: {prompt}"
+    """Build a plain-text prompt for the Llama 3.1 base model."""
+
+    sections = []
+
+    if sysprompt.strip():
+        sections.append(
+            "Instructions:\n"
+            f"{sysprompt.strip()}"
         )
 
-        # Llama 3.1 chat template (IDs: <|begin_of_text|>=128000,
-        # <|start_header_id|>=128006, <|end_header_id|>=128007, <|eot_id|>=128009)
-        return (
-            f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n"
-            f"{sysprompt}<|eot_id|>"
-            f"<|start_header_id|>user<|end_header_id|>\n\n"
-            f"{user_content}<|eot_id|>"
-            f"<|start_header_id|>assistant<|end_header_id|>\n\n"
+    context = context.strip()
+    if context:
+        sections.append(
+            "Context:\n"
+            f"{context}"
         )
+
+    sections.append(
+        "Question:\n"
+        f"{prompt.strip()}"
+    )
+
+    sections.append(
+        "Answer: "
+    )
+
+    return "\n\n".join(sections) + " "

@@ -220,7 +220,7 @@ __marimo__/
 # --- rag library-specific ---
 
 # Data files (large PDFs and processed corpora)
-data/
+# data/
 
 # FAISS indexes (regeneratable from corpus.json)
 *.faiss
@@ -234,4 +234,30 @@ data/
 artifacts
 debug
 pyrightconfig.json
+PROJECT_DESCRIPTION.md
+USER_MANUAL.md
+USER_MANUAL.pdf
+ToDo.md
+NEW_FEATURE.md
+NEW_FEATURE.pdf
+CURRENT_IMPLEMENTATION.md
+COMPARISON.md
+USER_MANUAL_v2.pdf
 docs/
+results/
+docs/
+
+data/cross-reference-extended.json
+data/out-of-scope-extended.json
+results/trials/
+results/bf16/
+results/experiment_results.csv
+scripts/aggregate_experiments.py
+results/trials_results_exp_0.csv
+results/trials_results_exp_1.csv
+results_bf16.txt
+results_compressed.txt
+turboquant_quantization_regression_summary.txt
+output.txt
+MVP_Pitch_Notes.md
+MVP_Pitch_Notes.pdf

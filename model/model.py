@@ -9,8 +9,6 @@
 # This software may be used and distributed in accordance with the terms of the Llama 3 Community License Agreement.
 
 import math
-import time
-from re import I
 from typing import Any, List, Optional, Tuple
 
 import fairscale.nn.model_parallel.initialize as fs_init
@@ -21,8 +19,7 @@ from fairscale.nn.model_parallel.layers import (
     RowParallelLinear,
     VocabParallelEmbedding,
 )
-from torch import nn, normal, transpose
-
+from torch import nn
 from .args import ModelArgs
 
 # **NOTE**: This code is not runnable without installing `torch` and `fairscale`
@@ -261,6 +258,36 @@ class Attention(nn.Module):
 
         if (
             hasattr(compressor, "compress_chunk_tensor_direct")
+            and hasattr(compressor, "compress_chunk_tensor_direct_into")
+            and tensor.device.type == "cuda"
+            and c_bstring.device.type == "cuda"
+            and c_qjl.device.type == "cuda"
+            and c_orig.device.type == "cuda"
+            and c_res.device.type == "cuda"
+            and bsz == 1
+        ):
+            b_view = c_bstring[:bsz, start_pos:end_pos]
+            q_view = c_qjl[:bsz, start_pos:end_pos]
+            o_view = c_orig[:bsz, start_pos:end_pos]
+            r_view = c_res[:bsz, start_pos:end_pos]
+
+            if (
+                b_view.is_contiguous()
+                and q_view.is_contiguous()
+                and o_view.is_contiguous()
+                and r_view.is_contiguous()
+            ):
+                compressor.compress_chunk_tensor_direct_into(
+                    tensor.view(-1, compressor.block_size),
+                    b_view.reshape(-1, b_view.shape[-1]),
+                    q_view.reshape(-1, q_view.shape[-1]),
+                    o_view.reshape(-1),
+                    r_view.reshape(-1),
+                )
+                return
+
+        if (
+            hasattr(compressor, "compress_chunk_tensor_direct")
             and tensor.device.type == "cuda"
             and c_bstring.device.type == "cuda"
             and c_qjl.device.type == "cuda"
@@ -273,41 +300,6 @@ class Attention(nn.Module):
             c_bstring[:bsz, start_pos:end_pos] = b_tensor.view(
                 bsz, seqlen, self.n_local_kv_heads, 1, -1
             )
-            c_qjl[:bsz, start_pos:end_pos] = q_tensor.view(
-                bsz, seqlen, self.n_local_kv_heads, 1, -1
-            )
-            c_orig[:bsz, start_pos:end_pos] = orig_l2.view(
-                bsz, seqlen, self.n_local_kv_heads, 1
-            )
-            c_res[:bsz, start_pos:end_pos] = res_l2.view(
-                bsz, seqlen, self.n_local_kv_heads, 1
-            )
-            return
-
-        # The end position that we are storing to 
-        # For prefill phase : seqlen
-        # For autoregressive phase : start pos + seqlen
-        end_pos = start_pos + seqlen
-
-        # On-Device Zero-Copy Quantization and Storage 
-        if (hasattr(compressor, "compress_chunk_tensor_direct")
-                and tensor.device.type == "cuda"
-                and c_bstring.device.type == "cuda"
-                and c_qjl.device.type == "cuda"
-                and c_orig.device.type == "cuda"
-                and c_res.device.type == "cuda"
-                ):
-            # We resize the tensors from (batch_size, seqlen, n_heads, head_dim) 
-            # to (seqlen * n_heads, block_size ~ 128)
-            b_tensor, q_tensor, orig_l2, res_l2 = compressor.compress_chunk_tensor_direct(
-                tensor.view(-1, compressor.block_size)
-            )
-            # The output of compression is a binary array of shape (batch_size, b_size)
-            # To (bsz ~ 1, seqlen ~ batch_size, n_heads, 1, -1 (which should be the b_size / n_heads)
-            c_bstring[:bsz, start_pos:end_pos] = b_tensor.view(
-                bsz, seqlen, self.n_local_kv_heads, 1, -1
-            )
-            # Same as above
             c_qjl[:bsz, start_pos:end_pos] = q_tensor.view(
                 bsz, seqlen, self.n_local_kv_heads, 1, -1
             )
@@ -358,6 +350,7 @@ class Attention(nn.Module):
         c_orig[:bsz, start_pos:end_pos] = orig_l2.to(c_orig.device)
         c_res[:bsz, start_pos:end_pos] = res_l2.to(c_res.device)
 
+
     def _fetch_decompressed_cache(
         self,
         bsz: int,
@@ -381,25 +374,36 @@ class Attention(nn.Module):
             b_bytes = (int(compressor.bit_width) * int(compressor.block_size) + 7) // 8
             q_bytes = (int(compressor.block_size) + 7) // 8
 
-            # Slice, flatten, and bulk-move to GPU in one go (cache may be on CPU)
-            b_flat = c_bstring[:bsz, :cache_len].contiguous().reshape(-1, b_bytes)
-            q_flat = c_qjl[:bsz, :cache_len].contiguous().reshape(-1, q_bytes)
-            r_flat = c_res[:bsz, :cache_len].contiguous().reshape(-1)
-            o_flat = c_orig[:bsz, :cache_len].contiguous().reshape(-1)
+            c_bstring = c_bstring[:bsz, :cache_len]
+            c_qjl = c_qjl[:bsz, :cache_len]
+            c_res = c_res[:bsz, :cache_len]
+            c_orig = c_orig[:bsz, :cache_len]
+            slice_len = c_orig.shape[1]
+
+            b_flat = c_bstring.contiguous().reshape(-1, b_bytes)
+            q_flat = c_qjl.contiguous().reshape(-1, q_bytes)
+            r_flat = c_res.contiguous().reshape(-1)
+            o_flat = c_orig.contiguous().reshape(-1)
 
             output = compressor.decompress_chunk_tensor_direct(b_flat, q_flat, r_flat, o_flat)
-            return output.view(bsz, cache_len, self.n_local_kv_heads, compressor.block_size).to(target_dtype)
+            return output.view(bsz, slice_len, self.n_local_kv_heads, compressor.block_size).to(target_dtype)
 
         """Vectorized fetching: Converts cache slices to C-input in bulk."""
+        c_bstring = c_bstring[:bsz, :cache_len]
+        c_qjl = c_qjl[:bsz, :cache_len]
+        c_res = c_res[:bsz, :cache_len]
+        c_orig = c_orig[:bsz, :cache_len]
+        slice_len = c_orig.shape[1]
+
         # 1. Slice and flatten everything to CPU
-        o_flat = c_orig[:bsz, :cache_len].reshape(-1).cpu().tolist()
-        r_flat = c_res[:bsz, :cache_len].reshape(-1).cpu().tolist()
+        o_flat = c_orig.reshape(-1).cpu().tolist()
+        r_flat = c_res.reshape(-1).cpu().tolist()
 
         b_bytes = (int(compressor.bit_width) * int(compressor.block_size) + 7) // 8
         q_bytes = (int(compressor.block_size) + 7) // 8
 
-        b_flat = c_bstring[:bsz, :cache_len].contiguous().reshape(-1, b_bytes).cpu().numpy()
-        q_flat = c_qjl[:bsz, :cache_len].contiguous().reshape(-1, q_bytes).cpu().numpy()
+        b_flat = c_bstring.contiguous().reshape(-1, b_bytes).cpu().numpy()
+        q_flat = c_qjl.contiguous().reshape(-1, q_bytes).cpu().numpy()
 
         compressed_blocks = [
             (o_flat[i], r_flat[i], b_flat[i].tobytes(), q_flat[i].tobytes())
@@ -409,7 +413,7 @@ class Attention(nn.Module):
         decompressed_blocks = compressor.decompress_chunk(compressed_blocks)
         # 4. Stack and view back to (B, S, H, D)
         stacked = torch.stack(decompressed_blocks, dim=0).to(device=target_device, dtype=target_dtype)
-        return stacked.view(bsz, cache_len, self.n_local_kv_heads, compressor.block_size)
+        return stacked.view(bsz, slice_len, self.n_local_kv_heads, compressor.block_size)
 
     def attention(
             self,
@@ -472,6 +476,7 @@ class Attention(nn.Module):
                 xv_out = xv[..., :self.outlier_dim] # outlier value
                 xv_norm = xv[..., self.outlier_dim:] # normal value
 
+
                 # 2. Store independently
                 # Compress xk_out and store its quantization result in k_bstring, k_qjl, k_orig (original L2), and residual L2
                 self._store_compressed_cache(xk_out, bsz, seqlen, start_pos, self.outlier_compressor, self.cache_k_bstring_outlier, self.cache_k_qjl_outlier, self.cache_k_orig_outlier, self.cache_k_res_outlier)
@@ -512,7 +517,6 @@ class Attention(nn.Module):
 
                 elif start_pos == 0:
                     output = self.attention(xk, xv, xq, mask)
-
             else:
                 self._store_compressed_cache(xk, bsz, seqlen, start_pos, self.kv_cache_compressor, self.cache_k_bstring, self.cache_k_qjl, self.cache_k_orig, self.cache_k_res)
                 self._store_compressed_cache(xv, bsz, seqlen, start_pos, self.kv_cache_compressor, self.cache_v_bstring, self.cache_v_qjl, self.cache_v_orig, self.cache_v_res)
@@ -544,10 +548,8 @@ class Attention(nn.Module):
 
             self.cache_k[:bsz, start_pos : start_pos + seqlen] = xk
             self.cache_v[:bsz, start_pos : start_pos + seqlen] = xv
-
             keys = self.cache_k[:bsz, : start_pos + seqlen]
             values = self.cache_v[:bsz, : start_pos + seqlen]
-
             output = self.attention(keys, values, xq, mask)
 
         output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
@@ -683,7 +685,7 @@ class Transformer(nn.Module):
 
         mask = None
         if seqlen > 1:
-            mask = torch.full((seqlen, seqlen), float("-inf"), device=tokens.device)
+            mask = torch.full((seqlen, seqlen), float("-inf"), device=h.device)
             mask = torch.triu(mask, diagonal=1)
 
             # https://github.com/pytorch/pytorch/issues/100005
@@ -696,7 +698,7 @@ class Transformer(nn.Module):
             # only for the new sequence. Thus, the matrix of scores is of size
             # (seqlen, cache_len + seqlen), and the only masked entries are (i, j) for
             # j > cache_len + i, since row i corresponds to token cache_len + i.
-            mask = torch.hstack([torch.zeros((seqlen, start_pos), device=tokens.device), mask]).type_as(h)
+            mask = torch.hstack([torch.zeros((seqlen, start_pos), device=h.device), mask]).type_as(h)
 
         for layer in self.layers:
             h = layer(h, start_pos, freqs_cis, mask)

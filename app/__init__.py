@@ -90,6 +90,16 @@ DEFAULT_BIT_WIDTH = float(os.getenv("DEFAULT_BIT_WIDTH", _TURBOQUANT_BIT_WIDTH))
 DEFAULT_BLOCK_SIZE = int(os.getenv("DEFAULT_BLOCK_SIZE", _TURBOQUANT_BLOCK_SIZE))
 DEFAULT_DIMENSIONS = int(os.getenv("DEFAULT_DIMENSIONS", _TURBOQUANT_DIMENSIONS))
 
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+TURBOQUANT_USE_FUSED_QUANT = _env_flag("TURBOQUANT_USE_FUSED_QUANT", True)
+
 # ============================================================================
 # Compressor Factory - Import from appropriate module based on variant
 # ============================================================================
