@@ -11,6 +11,7 @@ Class hierarchy:
 """
 
 import time
+import warnings
 from abc import ABC, abstractmethod
 from typing import List, cast
 import numpy as np
@@ -168,27 +169,54 @@ class GeminiEmbedder(Embedder):
 
 class BGEmbedder(Embedder):
     def __init__(self, batch_size: int = 12):
-        # Import lazily so the module can be imported without requiring the
-        # full FlagEmbedding/transformers stack unless this embedder is used.
-        from FlagEmbedding import FlagModel
-
-        self.model = FlagModel(
-            'BAAI/bge-small-en-v1.5',
-            use_fp16=False,
-            device='cpu'
-        )
 
         self.batch_size = batch_size
+        self._backend = "flagembedding"
+        self.model = None
+
+        # Import lazily so the module can be imported without requiring the
+        # full FlagEmbedding/transformers stack unless this embedder is used.
+        try:
+            from FlagEmbedding import FlagModel
+
+            self.model = FlagModel(
+                "BAAI/bge-small-en-v1.5",
+                use_fp16=False,
+                device="cpu",
+            )
+        except TypeError as exc:
+            # FlagEmbedding>=1.4 may pass `dtype=...` into transformers in some
+            # environments, which raises:
+            #   TypeError: BertModel.__init__() got an unexpected keyword argument 'dtype'
+            # Fall back to sentence-transformers so indexing can continue.
+            if "unexpected keyword argument 'dtype'" not in str(exc):
+                raise
+
+            from sentence_transformers import SentenceTransformer
+
+            warnings.warn(
+                "FlagEmbedding failed to initialize with a dtype compatibility "
+                "error; falling back to sentence-transformers backend for BGE.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            self._backend = "sentence-transformers"
+            self.model = SentenceTransformer("BAAI/bge-small-en-v1.5", device="cpu")
 
     def embed(self, texts: List[str]) -> List[List[float]]:
         try:
-            dense_embeddings = self.model.encode(
-                texts,
-                self.batch_size,
-            )
-
+            if self._backend == "flagembedding":
+                dense_embeddings = self.model.encode(
+                    texts,
+                    self.batch_size,
+                )
+            else:
+                dense_embeddings = self.model.encode(
+                    texts,
+                    batch_size=self.batch_size,
+                    convert_to_numpy=True,
+                )
 
             return dense_embeddings.tolist()
         except Exception as e:
-            print(e)
-            return [[]]
+            raise RuntimeError(f"Failed to embed texts with BGEmbedder. Reason: {e}") from e
