@@ -16,6 +16,7 @@ Lifecycle:
 
 import json
 import numpy as np
+import warnings
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 
@@ -23,8 +24,6 @@ from .chunker import Chunker
 from .embedder import Embedder
 from .generator import Generator
 from .vector_store import VectorStore
-
-from sentence_transformers import CrossEncoder
 
 # Type aliases for readability
 PathLike = Union[str, Path]
@@ -74,7 +73,20 @@ class RAG:
         self.chunker = chunker if chunker is not None else Chunker()
         self.vector_store = vector_store if vector_store is not None else VectorStore()
         self.top_k = top_k
-        self.reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+        self.reranker = None
+        try:
+            # Lazy import so dependency/version mismatches in the HF stack
+            # do not break `from rag_library import RAG`.
+            from sentence_transformers import CrossEncoder
+
+            self.reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+        except Exception as exc:
+            warnings.warn(
+                "sentence-transformers could not be initialized; reranking is disabled. "
+                f"Underlying error: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
     # ---------------------------------------------------------------------
     # Indexing
@@ -160,6 +172,8 @@ class RAG:
     def rerank_filter(self, query: str, chunks: List[Dict]) -> List[Dict]:
         if not chunks:
             return []
+        if self.reranker is None:
+            return chunks
 
         try:
             # 1. Compute Cross-Encoder logits
