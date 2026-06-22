@@ -355,7 +355,6 @@ class LlamaGenerator:
                  token_ids: Optional[List[int]],
                  llama: LlamaBF16 | LlamaCompressed,
                  max_gen_len: int = 1024) -> str:
-        fallback_response = "I don't have enough information to answer this."
 
         try:
             generated_token = []
@@ -364,23 +363,23 @@ class LlamaGenerator:
                 current_pos = 0
                 seq_len = tensor_tokens.shape[1]
 
-                # Warmup loop for compressed KV cache
                 if seq_len > 1:
-
-                    # Pass all prompt tokens up to the second-to-last one simultaneously.
                     prefill_prompt = tensor_tokens[:, :-1].contiguous()
-                    logits = llama.model.forward(prefill_prompt, start_pos=0)
 
-                    del logits, prefill_prompt
-                    current_pos = seq_len - 1
-
+                    _ = llama.model.forward(prefill_prompt, start_pos=0)
                     if llama.device == "cuda":
                         torch.cuda.synchronize()
 
+                    current_pos = seq_len - 1
+
                 current_token = tensor_tokens[:, -1:].contiguous()
 
-                for _ in range(max_gen_len):
+                for step in range(max_gen_len):
+
                     logits = llama.model.forward(current_token, current_pos)
+
+                    if llama.device == "cuda":
+                        torch.cuda.synchronize()
 
                     next_token = torch.argmax(logits[:, -1], dim=-1)
                     next_token_id = next_token.item()
@@ -394,14 +393,10 @@ class LlamaGenerator:
                     current_pos += logits.shape[1]
 
             response = llama.tokenizer.decode(generated_token).strip()
-            if not response:
-                return fallback_response
 
             return response
         except Exception as e:
             raise RuntimeError(f"Failed to generate response. Reason: {e}")
-
-
 
 def format_prompt(prompt: str, context: str, sysprompt: str) -> str:
     """Build a plain-text prompt for the Llama 3.1 base model."""
@@ -410,20 +405,24 @@ def format_prompt(prompt: str, context: str, sysprompt: str) -> str:
 
     if sysprompt.strip():
         sections.append(
-            "System:\n"
+            "Instructions:\n"
             f"{sysprompt.strip()}"
         )
 
-    sections.append(
-        "Context:\n"
-        f"{context.strip()}"
-    )
+    context = context.strip()
+    if context:
+        sections.append(
+            "Context:\n"
+            f"{context}"
+        )
 
     sections.append(
         "Question:\n"
         f"{prompt.strip()}"
     )
 
-    sections.append("Answer:")
+    sections.append(
+        "Answer: "
+    )
 
     return "\n\n".join(sections) + " "

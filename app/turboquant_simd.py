@@ -506,7 +506,7 @@ class SIMDBatchCompressor(TurboQuantCompressorBase):
 # Factory Function
 # ============================================================================
 
-def get_compressor_for_variant(lib_path: str, context_path: str, block_size: int, bit_width: int, variant: str = "auto", n_streams: int = 8):
+def get_compressor_for_variant(lib_path: str, context_path: str, block_size: int, bit_width: int, variant: str = "auto", n_streams: int = 32):
     """
     Factory function to create the appropriate compressor instance based on variant.
     

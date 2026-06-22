@@ -223,14 +223,10 @@ class _LlamaGeneratorBase:
     TurboQuantLlamaGenerator.
     """
     DEFAULT_SYSTEM_PROMPT = """You are a helpful technical assistant.
-Answer the user's question using ONLY the provided context.
-1. Be concise and accurate.
-2. Answer directly without repeating the question.
-2. Cite your sources (document name and page number).
-3. Do not use outside knowledge.
+Be concise and accurate
+Answer directly without repeating the question
+Return a direct answer in 1-3 sentences.
 """
-
-# If the provided context does not contain enough information to answer the question, say: "I can't answer this question"
 
     def _format_prompt(self, query: str, context: str, omit_sysprompt: bool) -> str:
         """Format query + context into a plain-text prompt for Llama 3.1 base."""
